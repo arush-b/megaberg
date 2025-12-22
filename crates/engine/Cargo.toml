@@ -5,8 +5,6 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-connectors = { path = "../connectors" }
-
 tokio.workspace = true
 async-channel.workspace = true
 futures.workspace = true
