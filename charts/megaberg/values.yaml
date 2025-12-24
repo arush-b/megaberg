@@ -1,0 +1,40 @@
+image:
+  repository: megaberg
+  tag: latest
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: megaberg
+  annotations: {}
+    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/megaberg-role
+
+configPath: /config/config.json
+
+config:
+  worker_count: 4
+  s3:
+    endpoint: "https://s3.amazonaws.com"
+    access_key: ""
+    secret_key: ""
+    bucket: "warehouse"
+    region: "us-east-1"
+  compaction:
+    target_file_size_bytes: 268435456
+    row_group_size: 100000
+    multipart_chunk_bytes: 8388608
+    compression: "zstd"
+    batch_size: 8192
+    memory_limit_bytes: 536870912
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "500m"
+  limits:
+    memory: "2Gi"
+    cpu: "2"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
