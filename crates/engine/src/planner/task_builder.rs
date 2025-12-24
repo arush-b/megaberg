@@ -1,0 +1,50 @@
+//! Builds CompactionTasks from FileGroups for executor consumption.
+
+use super::discovery::FileGroup;
+use uuid::Uuid;
+
+/// A compaction task ready for execution.
+#[derive(Debug, Clone)]
+pub struct CompactionTask {
+    /// Unique identifier for this task
+    pub task_id: String,
+    /// Partition key (e.g., "id_bucket=0")
+    pub partition: String,
+    /// Input file paths to compact
+    pub input_files: Vec<String>,
+    /// Output directory path (e.g., "db/test_table/data/id_bucket=0")
+    pub output_prefix: String,
+}
+
+/// Builds CompactionTasks from FileGroups.
+pub fn build_tasks(groups: Vec<FileGroup>, table_location: &str) -> Vec<CompactionTask> {
+    groups
+        .into_iter()
+        .map(|group| build_task(group, table_location))
+        .collect()
+}
+
+/// Builds a single CompactionTask from a FileGroup.
+fn build_task(group: FileGroup, table_location: &str) -> CompactionTask {
+    let task_id = Uuid::new_v4().to_string();
+
+    // Extract paths from FileInfo
+    let input_files: Vec<String> = group.files.into_iter().map(|f| f.path).collect();
+
+    // Build output prefix: {table_location}/data/{partition}/
+    let table_path = table_location
+        .trim_start_matches("s3://")
+        .split('/')
+        .skip(1) // skip bucket name
+        .collect::<Vec<_>>()
+        .join("/");
+
+    let output_prefix = format!("{}/data/{}", table_path, group.partition);
+
+    CompactionTask {
+        task_id,
+        partition: group.partition,
+        input_files,
+        output_prefix,
+    }
+}
