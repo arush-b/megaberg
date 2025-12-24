@@ -30,6 +30,10 @@ arrow = "53"
 
 # Storage
 object_store = { version = "0.11", features = ["aws"] }
+opendal = { version = "0.51", features = ["services-s3"] }
+
+# Query engine
+datafusion = "44"
 
 # Error handling
 thiserror = "2"

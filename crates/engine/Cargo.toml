@@ -5,12 +5,30 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# Async runtime
 tokio.workspace = true
 async-channel.workspace = true
 futures.workspace = true
-tracing.workspace = true
-thiserror.workspace = true
-anyhow.workspace = true
+
+# Data processing
+arrow.workspace = true
+parquet.workspace = true
+datafusion.workspace = true
+
+# Storage
+object_store.workspace = true
+opendal.workspace = true
+url.workspace = true
+bytes.workspace = true
+
+# Serialization
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
