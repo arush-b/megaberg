@@ -32,6 +32,7 @@ fn build_task(group: FileGroup, table_location: &str) -> CompactionTask {
     let input_files: Vec<String> = group.files.into_iter().map(|f| f.path).collect();
 
     // Build output prefix: {table_location}/data/{partition}/
+    // For unpartitioned tables (empty partition), just use {table_location}/data/
     let table_path = table_location
         .trim_start_matches("s3://")
         .split('/')
@@ -39,7 +40,11 @@ fn build_task(group: FileGroup, table_location: &str) -> CompactionTask {
         .collect::<Vec<_>>()
         .join("/");
 
-    let output_prefix = format!("{}/data/{}", table_path, group.partition);
+    let output_prefix = if group.partition.is_empty() {
+        format!("{}/data", table_path)
+    } else {
+        format!("{}/data/{}", table_path, group.partition)
+    };
 
     CompactionTask {
         task_id,

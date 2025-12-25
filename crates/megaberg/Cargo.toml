@@ -20,7 +20,20 @@ serde.workspace = true
 serde_json.workspace = true
 arrow.workspace = true
 parquet.workspace = true
-object_store.workspace = true
+opendal.workspace = true
 bytes.workspace = true
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v7"] }
 chrono = "0.4"
+futures = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
+aws-config = "1"
+aws-sdk-glue = "1"
+
+# Iceberg catalog (for examples)
+iceberg.workspace = true
+iceberg-catalog-rest.workspace = true
+iceberg-catalog-glue.workspace = true
+
+[[example]]
+name = "generate_data"
+path = "examples/generate_data.rs"

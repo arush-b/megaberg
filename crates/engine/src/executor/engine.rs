@@ -76,9 +76,9 @@ impl CompactionEngine {
 
         let ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env));
 
-        Self::register_s3_object_store(&ctx, s3_config)?;
+        register_object_store(&ctx, s3_config)?;
 
-        let write_operator = Self::build_opendal_operator(s3_config)?;
+        let write_operator = build_opendal_operator(s3_config)?;
 
         Ok(Self {
             ctx,
@@ -86,40 +86,6 @@ impl CompactionEngine {
             write_operator,
             config: compaction_config,
         })
-    }
-
-    fn register_s3_object_store(
-        ctx: &SessionContext,
-        s3_config: &S3Config,
-    ) -> Result<(), CompactionError> {
-        let store = AmazonS3Builder::new()
-            .with_bucket_name(&s3_config.bucket)
-            .with_region(&s3_config.region)
-            .with_access_key_id(&s3_config.access_key)
-            .with_secret_access_key(&s3_config.secret_key)
-            .with_endpoint(&s3_config.endpoint)
-            .with_allow_http(true)
-            .with_virtual_hosted_style_request(false)
-            .build()?;
-
-        let url = Url::parse(&format!("s3://{}", s3_config.bucket))?;
-        ctx.runtime_env()
-            .register_object_store(&url, Arc::new(store));
-
-        Ok(())
-    }
-
-    fn build_opendal_operator(s3_config: &S3Config) -> Result<Operator, CompactionError> {
-        let builder = opendal::services::S3::default()
-            .bucket(&s3_config.bucket)
-            .region(&s3_config.region)
-            .access_key_id(&s3_config.access_key)
-            .secret_access_key(&s3_config.secret_key)
-            .endpoint(&s3_config.endpoint)
-            .disable_config_load()
-            .disable_ec2_metadata();
-
-        Ok(Operator::new(builder)?.finish())
     }
 
     /// Execute a compaction task.
@@ -184,4 +150,75 @@ impl CompactionEngine {
     pub fn schema(&self) -> &SchemaRef {
         &self.schema
     }
+}
+
+fn register_object_store(
+    ctx: &SessionContext,
+    s3_config: &S3Config,
+) -> Result<(), CompactionError> {
+    let mut builder = AmazonS3Builder::new()
+        .with_bucket_name(&s3_config.bucket)
+        .with_region(&s3_config.region)
+        .with_endpoint(&s3_config.endpoint)
+        .with_allow_http(true)
+        .with_virtual_hosted_style_request(false);
+
+    // Use explicit credentials or read from environment
+    if s3_config.use_default_credentials {
+        // Read credentials from environment variables
+        let access_key = std::env::var("AWS_ACCESS_KEY_ID")
+            .map_err(|_| CompactionError::Config("AWS_ACCESS_KEY_ID not set".to_string()))?;
+        let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY")
+            .map_err(|_| CompactionError::Config("AWS_SECRET_ACCESS_KEY not set".to_string()))?;
+        builder = builder
+            .with_access_key_id(&access_key)
+            .with_secret_access_key(&secret_key);
+        // Also add session token if present
+        if let Ok(token) = std::env::var("AWS_SESSION_TOKEN") {
+            builder = builder.with_token(&token);
+        }
+    } else {
+        builder = builder
+            .with_access_key_id(&s3_config.access_key)
+            .with_secret_access_key(&s3_config.secret_key);
+    }
+
+    let store = builder.build()?;
+
+    let url = Url::parse(&format!("s3://{}", s3_config.bucket))?;
+    ctx.runtime_env()
+        .register_object_store(&url, Arc::new(store));
+
+    Ok(())
+}
+
+fn build_opendal_operator(s3_config: &S3Config) -> Result<Operator, CompactionError> {
+    let mut builder = opendal::services::S3::default()
+        .bucket(&s3_config.bucket)
+        .region(&s3_config.region)
+        .endpoint(&s3_config.endpoint);
+
+    // Use explicit credentials or read from environment
+    if s3_config.use_default_credentials {
+        // Read credentials from environment variables explicitly
+        // Disable EC2 metadata to avoid timeouts on non-EC2 machines
+        if let Ok(access_key) = std::env::var("AWS_ACCESS_KEY_ID") {
+            builder = builder.access_key_id(&access_key);
+        }
+        if let Ok(secret_key) = std::env::var("AWS_SECRET_ACCESS_KEY") {
+            builder = builder.secret_access_key(&secret_key);
+        }
+        if let Ok(token) = std::env::var("AWS_SESSION_TOKEN") {
+            builder = builder.session_token(&token);
+        }
+        builder = builder.disable_ec2_metadata();
+    } else {
+        builder = builder
+            .access_key_id(&s3_config.access_key)
+            .secret_access_key(&s3_config.secret_key)
+            .disable_config_load()
+            .disable_ec2_metadata();
+    }
+
+    Ok(Operator::new(builder)?.finish())
 }

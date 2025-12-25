@@ -117,6 +117,7 @@ async fn write_test_file(
         .unwrap();
     let props = WriterProperties::builder()
         .set_compression(Compression::UNCOMPRESSED)
+        .set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
         .build();
 
     let mut parquet_writer =

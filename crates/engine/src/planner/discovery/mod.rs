@@ -1,5 +1,7 @@
+mod catalog;
 mod iceberg;
 
+pub use catalog::{CatalogConfig, TableInfo, load_table_info};
 pub use iceberg::IcebergDiscovery;
 
 use std::collections::HashMap;

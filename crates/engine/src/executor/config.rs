@@ -6,14 +6,19 @@ use serde::{Deserialize, Serialize};
 pub struct S3Config {
     /// S3 endpoint URL (e.g., http://localhost:9000 for MinIO)
     pub endpoint: String,
-    /// Access key ID
+    /// Access key ID (if empty, uses AWS default credential chain)
+    #[serde(default)]
     pub access_key: String,
-    /// Secret access key
+    /// Secret access key (if empty, uses AWS default credential chain)
+    #[serde(default)]
     pub secret_key: String,
     /// Bucket name
     pub bucket: String,
     /// AWS region
     pub region: String,
+    /// Use AWS default credential chain (ignores access_key/secret_key)
+    #[serde(default)]
+    pub use_default_credentials: bool,
 }
 
 impl Default for S3Config {
@@ -24,6 +29,7 @@ impl Default for S3Config {
             secret_key: "password".to_string(),
             bucket: "warehouse".to_string(),
             region: "us-east-1".to_string(),
+            use_default_credentials: false,
         }
     }
 }

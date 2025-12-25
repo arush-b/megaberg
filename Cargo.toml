@@ -25,15 +25,20 @@ serde_yaml = "0.9"
 
 # Iceberg / Parquet
 apache-avro = "0.17"
-parquet = "53"
-arrow = "53"
+parquet = "55"
+arrow = "55"
+
+# Iceberg catalog
+iceberg = { version = "0.7", features = ["storage-s3"] }
+iceberg-catalog-rest = "0.7"
+iceberg-catalog-glue = "0.7"
 
 # Storage
-object_store = { version = "0.11", features = ["aws"] }
+object_store = { version = "0.12", features = ["aws"] }
 opendal = { version = "0.51", features = ["services-s3"] }
 
 # Query engine
-datafusion = "44"
+datafusion = "48"
 
 # Error handling
 thiserror = "2"
@@ -41,7 +46,7 @@ anyhow = "1"
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # CLI
 clap = { version = "4", features = ["derive"] }

@@ -37,3 +37,8 @@ tracing.workspace = true
 # Iceberg table format (planner)
 apache-avro.workspace = true
 uuid = { version = "1", features = ["v4"] }
+
+# Iceberg catalog
+iceberg.workspace = true
+iceberg-catalog-rest.workspace = true
+iceberg-catalog-glue.workspace = true

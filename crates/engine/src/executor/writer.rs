@@ -302,8 +302,10 @@ impl RollingParquetWriter {
     ) -> Self {
         let writer_props = Arc::new(
             WriterProperties::builder()
+                .set_writer_version(parquet::file::properties::WriterVersion::PARQUET_1_0)
                 .set_compression(config.compression)
                 .set_max_row_group_size(config.row_group_size)
+                .set_statistics_enabled(parquet::file::properties::EnabledStatistics::None)
                 .build(),
         );
 
@@ -396,7 +398,14 @@ impl RollingParquetWriter {
                 // Extract all metadata from FileMetaData
                 let column_stats = extract_column_stats(&file_metadata, &self.path_to_field_id);
                 let split_offsets = extract_split_offsets(&file_metadata);
-                let size_bytes = calculate_file_size(&file_metadata);
+
+                // Get actual file size from storage (includes header, footer, and magic bytes)
+                let size_bytes = self
+                    .operator
+                    .stat(&path)
+                    .await
+                    .map(|s| s.content_length())
+                    .unwrap_or_else(|_| calculate_file_size(&file_metadata));
 
                 self.completed.push(WrittenFile {
                     path,
