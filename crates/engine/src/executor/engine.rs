@@ -1,5 +1,6 @@
 //! Compaction engine with reusable DataFusion infrastructure.
 use arrow::datatypes::SchemaRef;
+use common::S3Config;
 use datafusion::execution::memory_pool::FairSpillPool;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::*;
@@ -10,7 +11,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use url::Url;
 
-use super::config::{CompactionConfig, ExecutorConfig, S3Config, StorageError};
+use super::config::{CompactionConfig, ExecutorConfig};
 use super::writer::{RollingParquetWriter, WrittenFile};
 
 /// Errors that can occur during compaction.
@@ -22,8 +23,11 @@ pub enum CompactionError {
     #[error("Parquet error: {0}")]
     Parquet(#[from] parquet::errors::ParquetError),
 
+    #[error("OpenDAL error: {0}")]
+    OpenDal(#[from] opendal::Error),
+
     #[error("Storage error: {0}")]
-    Storage(#[from] StorageError),
+    Storage(#[from] common::StorageError),
 
     #[error("URL parse error: {0}")]
     UrlParse(#[from] url::ParseError),
@@ -63,9 +67,18 @@ impl CompactionEngine {
         s3_config: &S3Config,
         compaction_config: CompactionConfig,
     ) -> Result<Self, CompactionError> {
-        // Build single OpenDAL operator for all S3 operations
         let operator = s3_config.build_operator()?;
+        Self::with_operator(schema, s3_config, compaction_config, operator).await
+    }
 
+    /// Create a compaction engine with an external OpenDAL operator.
+    /// This allows sharing the operator with other components (e.g., discovery).
+    pub async fn with_operator(
+        schema: SchemaRef,
+        s3_config: &S3Config,
+        compaction_config: CompactionConfig,
+        operator: Operator,
+    ) -> Result<Self, CompactionError> {
         // Build SessionContext with memory pool
         let session_config = SessionConfig::new()
             .with_batch_size(compaction_config.batch_size)
@@ -79,7 +92,7 @@ impl CompactionEngine {
 
         let ctx = SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env));
 
-        // Register OpendalStore for DataFusion reads (bridges OpenDAL to object_store)
+        // Register OpenDAL as object store for DataFusion reads
         let store = OpendalStore::new(operator.clone());
         let url = Url::parse(&format!("s3://{}", s3_config.bucket))?;
         ctx.runtime_env()

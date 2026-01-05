@@ -1,29 +1,36 @@
 image:
-  repository: megaberg
+  repository: gladium08/compaction
   tag: latest
   pullPolicy: IfNotPresent
 
 serviceAccount:
-  create: true
-  name: megaberg
-  annotations: {}
-    # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT_ID:role/megaberg-role
+  create: false
+  name: laminar-query-history
 
 configPath: /config/config.json
 
 config:
   worker_count: 4
   s3:
-    endpoint: "https://s3.amazonaws.com"
+    endpoint: "https://s3.us-east-1.amazonaws.com"
     access_key: ""
     secret_key: ""
-    bucket: "warehouse"
+    bucket: "laminar-dev"
     region: "us-east-1"
+  catalog:
+    type: "glue"
+    warehouse: "s3://laminar-dev/warehouse"
+    region: "us-east-1"
+  table:
+    namespace: "laminar_iceberg"
+    name: "laminar_shreyas_compaction"
   compaction:
+    target_file_size_mb: 256
+    min_files_per_partition: 2
     target_file_size_bytes: 268435456
-    row_group_size: 100000
-    multipart_chunk_bytes: 8388608
-    compression: "zstd"
+    row_group_size: 300000
+    multipart_chunk_bytes: 67108864
+    compression: "none"
     batch_size: 8192
     memory_limit_bytes: 536870912
 

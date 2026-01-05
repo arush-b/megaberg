@@ -1,0 +1,23 @@
+{
+  "s3": {
+    "endpoint": "http://host.docker.internal:9000",
+    "bucket": "lakehouse",
+    "region": "us-east-1",
+    "access_key": "admin",
+    "secret_key": "password",
+    "use_default_credentials": false
+  },
+  "catalog": {
+    "type": "rest",
+    "uri": "http://host.docker.internal:8181",
+    "warehouse": "s3://lakehouse"
+  },
+  "table": {
+    "namespace": "default",
+    "name": "test_table"
+  },
+  "compaction": {
+    "target_file_size_mb": 256,
+    "min_files_per_partition": 2
+  }
+}

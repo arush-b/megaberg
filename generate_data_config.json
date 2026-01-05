@@ -1,0 +1,20 @@
+{
+  "s3": {
+    "endpoint": "https://s3.us-east-1.amazonaws.com",
+    "bucket": "laminar-dev",
+    "region": "us-east-1"
+  },
+  "catalog": {
+    "type": "glue",
+    "warehouse": "s3://laminar-dev/warehouse",
+    "region": "us-east-1"
+  },
+  "table": {
+    "namespace": "laminar_iceberg",
+    "name": "laminar_shreyas_compaction"
+  },
+  "generate": {
+    "num_files": 20,
+    "rows_per_file": 500000
+  }
+}
