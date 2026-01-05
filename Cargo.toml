@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/megaberg",
     "crates/engine",
+    "crates/common",
+    "crates/iceberg-data-gen",
 ]
 
 [workspace.package]
@@ -33,9 +35,9 @@ iceberg = { version = "0.7", features = ["storage-s3"] }
 iceberg-catalog-rest = "0.7"
 iceberg-catalog-glue = "0.7"
 
-# Storage
-object_store = { version = "0.12", features = ["aws"] }
-opendal = { version = "0.51", features = ["services-s3"] }
+# Storage (opendal for S3 access, object_store_opendal bridges to DataFusion)
+opendal = { version = "0.55", features = ["services-s3"] }
+object_store_opendal = "0.55"
 
 # Query engine
 datafusion = "48"

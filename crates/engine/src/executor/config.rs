@@ -1,38 +1,8 @@
 use parquet::basic::Compression;
 use serde::{Deserialize, Serialize};
 
-/// S3-compatible storage configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct S3Config {
-    /// S3 endpoint URL (e.g., http://localhost:9000 for MinIO)
-    pub endpoint: String,
-    /// Access key ID (if empty, uses AWS default credential chain)
-    #[serde(default)]
-    pub access_key: String,
-    /// Secret access key (if empty, uses AWS default credential chain)
-    #[serde(default)]
-    pub secret_key: String,
-    /// Bucket name
-    pub bucket: String,
-    /// AWS region
-    pub region: String,
-    /// Use AWS default credential chain (ignores access_key/secret_key)
-    #[serde(default)]
-    pub use_default_credentials: bool,
-}
-
-impl Default for S3Config {
-    fn default() -> Self {
-        Self {
-            endpoint: "http://localhost:9000".to_string(),
-            access_key: "admin".to_string(),
-            secret_key: "password".to_string(),
-            bucket: "warehouse".to_string(),
-            region: "us-east-1".to_string(),
-            use_default_credentials: false,
-        }
-    }
-}
+// Re-export S3Config from common crate
+pub use common::S3Config;
 
 /// Compaction-specific configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +11,7 @@ pub struct CompactionConfig {
     pub target_file_size_bytes: u64,
     /// Number of rows per row group (default: 100,000)
     pub row_group_size: usize,
-    /// Multipart upload chunk size in bytes (default: 8 MB)
+    /// Multipart upload chunk size in bytes (default: 64 MB)
     pub multipart_chunk_bytes: usize,
     /// Parquet compression codec
     #[serde(with = "compression_serde")]
@@ -57,7 +27,7 @@ impl Default for CompactionConfig {
         Self {
             target_file_size_bytes: 256 * 1024 * 1024, // 256 MB
             row_group_size: 100_000,
-            multipart_chunk_bytes: 8 * 1024 * 1024, // 8 MB
+            multipart_chunk_bytes: 64 * 1024 * 1024, // 64 MB
             compression: Compression::ZSTD(Default::default()),
             batch_size: 8192,
             memory_limit_bytes: 512 * 1024 * 1024, // 512 MB

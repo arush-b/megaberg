@@ -1,0 +1,27 @@
+{
+  "s3": {
+    "endpoint": "https://s3.us-east-1.amazonaws.com",
+    "bucket": "laminar-dev-iceberg",
+    "region": "us-east-1"
+  },
+  "catalog": {
+    "type": "glue",
+    "warehouse": "s3://laminar-dev-iceberg/warehouse",
+    "catalog_id": "792306802931"
+  },
+  "table": {
+    "namespace": "laminar_iceberg",
+    "name": "data_gen_test"
+  },
+  "generate": {
+    "total_size_mb": 10,
+    "file_size_kb": 10,
+    "parallelism": 8,
+    "compression": "uncompressed",
+    "partitions": {
+      "num_aliases": 1,
+      "workspaces_per_alias": 1,
+      "clusters_per_workspace": 1
+    }
+  }
+}

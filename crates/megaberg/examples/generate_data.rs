@@ -150,7 +150,7 @@ fn default_rows_per_file() -> usize {
     ROWS_PER_FILE
 }
 fn default_compression() -> String {
-    "snappy".to_string()
+    "none".to_string()
 }
 
 impl Default for GenerateConfig {
@@ -158,7 +158,7 @@ impl Default for GenerateConfig {
         Self {
             num_files: NUM_FILES,
             rows_per_file: ROWS_PER_FILE,
-            compression: default_compression(),
+            compression: "none".to_string(),
         }
     }
 }
@@ -237,6 +237,7 @@ impl AsyncFileWriter for OpendalWriter {
             self.0
                 .close()
                 .await
+                .map(|_| ())
                 .map_err(|e| ParquetError::External(Box::new(e)))
         }
         .boxed()
@@ -458,8 +459,15 @@ async fn main() -> Result<()> {
                 let start_id = (i * rows_per_file) as i64;
 
                 print!("  Writing file {}/{}: {}...", i + 1, num_files, path);
-                let (written_path, size, count) =
-                    write_test_file(&operator, &path, &schema, start_id, rows_per_file, compression).await?;
+                let (written_path, size, count) = write_test_file(
+                    &operator,
+                    &path,
+                    &schema,
+                    start_id,
+                    rows_per_file,
+                    compression,
+                )
+                .await?;
                 println!(" {:.2} MB, {} rows", size as f64 / 1024.0 / 1024.0, count);
 
                 files.push((written_path, size, count));
@@ -486,11 +494,42 @@ async fn main() -> Result<()> {
                     println!("Table doesn't exist, creating...");
                     let iceberg_schema = iceberg::spec::Schema::builder()
                         .with_fields(vec![
-                            iceberg::spec::NestedField::required(1, "id", iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Long)).into(),
-                            iceberg::spec::NestedField::required(2, "timestamp", iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Long)).into(),
-                            iceberg::spec::NestedField::required(3, "value", iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Double)).into(),
-                            iceberg::spec::NestedField::required(4, "category", iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::String)).into(),
-                            iceberg::spec::NestedField::required(5, "description", iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::String)).into(),
+                            iceberg::spec::NestedField::required(
+                                1,
+                                "id",
+                                iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Long),
+                            )
+                            .into(),
+                            iceberg::spec::NestedField::required(
+                                2,
+                                "timestamp",
+                                iceberg::spec::Type::Primitive(iceberg::spec::PrimitiveType::Long),
+                            )
+                            .into(),
+                            iceberg::spec::NestedField::required(
+                                3,
+                                "value",
+                                iceberg::spec::Type::Primitive(
+                                    iceberg::spec::PrimitiveType::Double,
+                                ),
+                            )
+                            .into(),
+                            iceberg::spec::NestedField::required(
+                                4,
+                                "category",
+                                iceberg::spec::Type::Primitive(
+                                    iceberg::spec::PrimitiveType::String,
+                                ),
+                            )
+                            .into(),
+                            iceberg::spec::NestedField::required(
+                                5,
+                                "description",
+                                iceberg::spec::Type::Primitive(
+                                    iceberg::spec::PrimitiveType::String,
+                                ),
+                            )
+                            .into(),
                         ])
                         .build()
                         .context("Failed to build iceberg schema")?;
@@ -498,11 +537,17 @@ async fn main() -> Result<()> {
                     let table_creation = iceberg::TableCreation::builder()
                         .name(config.table.name.clone())
                         .schema(iceberg_schema)
-                        .location(format!("{}/{}/{}", warehouse, config.table.namespace, config.table.name))
+                        .location(format!(
+                            "{}/{}/{}",
+                            warehouse, config.table.namespace, config.table.name
+                        ))
                         .build();
 
                     catalog
-                        .create_table(&iceberg::NamespaceIdent::new(config.table.namespace.clone()), table_creation)
+                        .create_table(
+                            &iceberg::NamespaceIdent::new(config.table.namespace.clone()),
+                            table_creation,
+                        )
                         .await
                         .context("Failed to create table")?
                 }
@@ -523,8 +568,15 @@ async fn main() -> Result<()> {
                 let start_id = (i * rows_per_file) as i64;
 
                 print!("  Writing file {}/{}: {}...", i + 1, num_files, path);
-                let (written_path, size, count) =
-                    write_test_file(&operator, &path, &schema, start_id, rows_per_file, compression).await?;
+                let (written_path, size, count) = write_test_file(
+                    &operator,
+                    &path,
+                    &schema,
+                    start_id,
+                    rows_per_file,
+                    compression,
+                )
+                .await?;
                 println!(" {:.2} MB, {} rows", size as f64 / 1024.0 / 1024.0, count);
 
                 files.push((written_path, size, count));

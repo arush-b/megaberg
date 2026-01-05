@@ -2,12 +2,12 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
-use engine::executor::S3Config;
+use common::S3Config;
 use engine::planner::CatalogConfig;
 use opendal::Operator;
 use serde::Deserialize;
 
-/// S3 configuration
+/// S3 configuration (JSON format)
 #[derive(Debug, Deserialize)]
 pub struct S3ConfigJson {
     pub endpoint: String,
@@ -29,36 +29,7 @@ fn default_true() -> bool {
 }
 
 impl S3ConfigJson {
-    /// Build an OpenDAL operator for S3
-    pub fn build_operator(&self) -> Result<Operator> {
-        let mut builder = opendal::services::S3::default()
-            .bucket(&self.bucket)
-            .region(&self.region)
-            .endpoint(&self.endpoint);
-
-        // Set credentials if provided explicitly
-        if let Some(ref access_key) = self.access_key {
-            builder = builder.access_key_id(access_key);
-        }
-        if let Some(ref secret_key) = self.secret_key {
-            builder = builder.secret_access_key(secret_key);
-        }
-
-        // If NOT using default credentials, disable config loading to use only provided creds
-        if !self.use_default_credentials {
-            builder = builder.disable_config_load();
-        }
-
-        let op = Operator::new(builder)
-            .context("Failed to create OpenDAL S3 operator")?
-            .finish();
-
-        Ok(op)
-    }
-}
-
-impl S3ConfigJson {
-    /// Convert to S3Config, using default credential chain if configured.
+    /// Convert to common::S3Config
     pub fn to_s3_config(&self) -> S3Config {
         S3Config {
             endpoint: self.endpoint.clone(),
@@ -68,6 +39,13 @@ impl S3ConfigJson {
             region: self.region.clone(),
             use_default_credentials: self.use_default_credentials,
         }
+    }
+
+    /// Build an OpenDAL operator for S3
+    pub fn build_operator(&self) -> Result<Operator> {
+        self.to_s3_config()
+            .build_operator()
+            .context("Failed to create OpenDAL S3 operator")
     }
 }
 

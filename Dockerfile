@@ -1,5 +1,5 @@
 # Build stage
-FROM rust:1.83-bookworm AS builder
+FROM rustlang/rust:nightly-bookworm AS builder
 
 WORKDIR /app
 
@@ -25,5 +25,5 @@ COPY --from=builder /app/target/release/megaberg /usr/local/bin/megaberg
 # Config will be mounted at /config/config.json
 VOLUME ["/config"]
 
-ENTRYPOINT ["megaberg"]
-CMD ["--config", "/config/config.json"]
+# Keep container running for exec
+CMD ["tail", "-f", "/dev/null"]

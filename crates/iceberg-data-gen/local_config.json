@@ -1,0 +1,30 @@
+{
+  "s3": {
+    "endpoint": "http://localhost:9000",
+    "bucket": "lakehouse",
+    "region": "us-east-1",
+    "access_key": "admin",
+    "secret_key": "password",
+    "disable_config_load": true
+  },
+  "catalog": {
+    "type": "rest",
+    "uri": "http://localhost:8181",
+    "warehouse": "s3://lakehouse/warehouse"
+  },
+  "table": {
+    "namespace": "default",
+    "name": "data_gen_test"
+  },
+  "generate": {
+    "total_size_mb": 100,
+    "file_size_kb": 10,
+    "parallelism": 4,
+    "compression": "uncompressed",
+    "partitions": {
+      "num_aliases": 1,
+      "workspaces_per_alias": 1,
+      "clusters_per_workspace": 1
+    }
+  }
+}
