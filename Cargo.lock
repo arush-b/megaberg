@@ -2217,6 +2217,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
 ]
@@ -3330,6 +3331,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow",
+ "async-trait",
  "aws-config",
  "aws-sdk-glue",
  "bytes",

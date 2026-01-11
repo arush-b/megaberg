@@ -1,15 +1,14 @@
 mod catalog;
-mod iceberg;
 
-pub use catalog::{CatalogConfig, TableInfo, load_table_info};
-pub use iceberg::IcebergDiscovery;
+pub use catalog::{load_table_info, CatalogConfig, TableInfo};
 
 use std::collections::HashMap;
 
 /// Supported table formats
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableFormat {
     Iceberg,
+    Parquet,
 }
 
 /// Information about a single data file
@@ -30,10 +29,4 @@ pub struct FileGroup {
     pub files: Vec<FileInfo>,
     pub total_bytes: u64,
     pub total_records: u64,
-}
-
-/// Discovery trait for different table formats
-#[async_trait::async_trait]
-pub trait Discovery {
-    async fn discover(&self) -> anyhow::Result<PartitionFileMap>;
 }

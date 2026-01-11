@@ -42,3 +42,10 @@ uuid = { version = "1", features = ["v4"] }
 iceberg.workspace = true
 iceberg-catalog-rest.workspace = true
 iceberg-catalog-glue.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tracing-subscriber.workspace = true
+arrow.workspace = true
+parquet.workspace = true
+bytes.workspace = true

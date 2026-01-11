@@ -51,6 +51,7 @@
 
 mod commit;
 mod configs;
+pub mod sink;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -62,8 +63,8 @@ use bytes::Bytes;
 use clap::Parser;
 use engine::executor::{CompactionConfig, CompactionEngine, S3Config};
 use engine::planner::{
-    build_tasks, load_table_info, pack_files, CatalogConfig, Discovery,
-    IcebergDiscovery, PackerConfig,
+    build_tasks, load_table_info, pack_files, CatalogConfig, IcebergSource, PackerConfig,
+    TableSource,
 };
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableIdent};
 use iceberg_catalog_glue::GlueCatalogBuilder;
@@ -161,8 +162,8 @@ async fn main() -> Result<()> {
 
     // Step 2: Discover files
     info!("Discovering files from manifests...");
-    let discovery = IcebergDiscovery::new(table_info.clone(), operator.clone());
-    let partition_map = discovery.discover().await
+    let source = IcebergSource::new(table_info.clone(), operator.clone());
+    let partition_map = source.discover().await
         .context("Failed to discover files")?;
 
     let total_files: usize = partition_map.values().map(|v| v.len()).sum();
