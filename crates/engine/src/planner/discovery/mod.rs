@@ -1,7 +1,3 @@
-mod catalog;
-
-pub use catalog::{load_table_info, CatalogConfig, TableInfo};
-
 use std::collections::HashMap;
 
 /// Supported table formats

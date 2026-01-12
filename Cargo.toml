@@ -55,5 +55,11 @@ clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
 
+# Time handling
+chrono = "0.4"
+
+# Encoding
+hex = "0.4"
+
 # Testing
 tempfile = "3"

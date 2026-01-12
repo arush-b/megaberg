@@ -38,8 +38,13 @@ mod parquet;
 
 pub use source::TableSource;
 pub use sink::{TableSink, CommitResult, OutputFileInfo};
-pub use iceberg::IcebergSource;
-pub use parquet::ParquetSource;
+pub use iceberg::{IcebergSource, CatalogConfig};
+pub use parquet::{
+    ParquetSource,
+    // Time window config types for observability data
+    TimeWindowConfig, PartitionTimeSpec, PartitionTimeField,
+    TimeComponent, PartitionGranularity, LookbackWindow,
+};
 
 // Re-export core types from discovery for convenience
 pub use super::discovery::{TableFormat, FileInfo, PartitionFileMap, FileGroup};

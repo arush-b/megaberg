@@ -63,7 +63,7 @@ use bytes::Bytes;
 use clap::Parser;
 use engine::executor::{CompactionConfig, CompactionEngine, S3Config};
 use engine::planner::{
-    build_tasks, load_table_info, pack_files, CatalogConfig, IcebergSource, PackerConfig,
+    build_tasks, pack_files, CatalogConfig, IcebergSource, PackerConfig, ParquetSource,
     TableSource,
 };
 use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableIdent};
@@ -76,7 +76,7 @@ use parquet::file::reader::{FileReader, SerializedFileReader};
 use tracing::{info, warn};
 
 use crate::commit::{commit_compaction, commit_compaction_glue, OutputFile, TaskResult};
-use crate::configs::Config;
+use crate::configs::{Config, SourceConfigJson};
 
 /// Read Arrow schema from a parquet file
 async fn read_schema_from_parquet(operator: &Operator, path: &str) -> Result<SchemaRef> {
@@ -142,27 +142,53 @@ async fn main() -> Result<()> {
         "Built S3 operator"
     );
 
-    // Step 1: Load table info from catalog
-    info!("Loading table info from catalog...");
-    let catalog_config: CatalogConfig = (&config.catalog).into();
-    let table_info = load_table_info(
-        &catalog_config,
-        &config.table.namespace,
-        &config.table.name,
-    )
-    .await
-    .context("Failed to load table info from catalog")?;
+    // Step 1: Create source based on config
+    let source: Box<dyn TableSource> = match &config.source {
+        SourceConfigJson::Iceberg => {
+            info!("Loading table from Iceberg catalog...");
+            let catalog_config: CatalogConfig = (&config.catalog).into();
+            let iceberg_source = IcebergSource::new(
+                &catalog_config,
+                &config.table.namespace,
+                &config.table.name,
+            )
+            .await
+            .context("Failed to load table from catalog")?;
+
+            info!(
+                location = %iceberg_source.location(),
+                "Loaded table from Iceberg catalog"
+            );
+            Box::new(iceberg_source)
+        }
+        SourceConfigJson::Parquet { base_path } => {
+            info!(base_path = %base_path, "Using Parquet source with S3 listing");
+
+            let mut parquet_source =
+                ParquetSource::new(operator.clone(), base_path.clone(), config.s3.bucket.clone());
+
+            // Apply time window config if specified
+            if let Some(ref tw_config) = config.time_window {
+                info!(
+                    skip_recent = tw_config.skip_recent,
+                    granularity = ?tw_config.partition_spec.granularity,
+                    "Enabling time-windowed discovery"
+                );
+                parquet_source = parquet_source.with_time_window(tw_config.to_time_window_config());
+            }
+
+            Box::new(parquet_source)
+        }
+    };
 
     info!(
-        location = %table_info.location,
-        snapshot_id = table_info.snapshot_id,
-        manifest_list = %table_info.manifest_list_path,
-        "Loaded table info"
+        location = %source.location(),
+        source_type = ?config.source,
+        "Source configured"
     );
 
     // Step 2: Discover files
     info!("Discovering files from manifests...");
-    let source = IcebergSource::new(table_info.clone(), operator.clone());
     let partition_map = source.discover().await
         .context("Failed to discover files")?;
 
@@ -209,7 +235,7 @@ async fn main() -> Result<()> {
     info!(groups = file_groups.len(), "Created file groups");
 
     // Step 4: Build compaction tasks
-    let tasks = build_tasks(file_groups, &table_info.location);
+    let tasks = build_tasks(file_groups, source.location());
     let planning_time = planning_start.elapsed();
     info!(
         tasks = tasks.len(),

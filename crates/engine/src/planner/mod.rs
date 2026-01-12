@@ -3,14 +3,15 @@ pub mod packer;
 pub mod table;
 pub mod task_builder;
 
-pub use discovery::{
-    load_table_info, CatalogConfig, FileGroup, FileInfo, PartitionFileMap, TableFormat, TableInfo,
-};
+pub use discovery::{FileGroup, FileInfo, PartitionFileMap, TableFormat};
 pub use packer::{pack_files, PackerConfig};
 pub use task_builder::{build_tasks, CompactionTask};
 
 // Re-export table traits and implementations
 pub use table::{
-    TableSource, TableSink, CommitResult, OutputFileInfo,
-    IcebergSource, ParquetSource,
+    CatalogConfig, CommitResult, IcebergSource, OutputFileInfo, ParquetSource, TableSink,
+    TableSource,
+    // Time window types for observability compaction
+    TimeWindowConfig, PartitionTimeSpec, PartitionTimeField,
+    TimeComponent, PartitionGranularity, LookbackWindow,
 };

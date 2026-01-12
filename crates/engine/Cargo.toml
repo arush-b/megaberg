@@ -43,6 +43,10 @@ iceberg.workspace = true
 iceberg-catalog-rest.workspace = true
 iceberg-catalog-glue.workspace = true
 
+# Time and encoding
+chrono.workspace = true
+hex.workspace = true
+
 [dev-dependencies]
 tokio.workspace = true
 tracing-subscriber.workspace = true
