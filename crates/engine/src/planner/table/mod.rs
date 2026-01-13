@@ -38,7 +38,7 @@ mod parquet;
 
 pub use source::TableSource;
 pub use sink::{TableSink, CommitResult, OutputFileInfo};
-pub use iceberg::{IcebergSource, CatalogConfig};
+pub use iceberg::{IcebergTable, CatalogConfig};
 pub use parquet::{
     ParquetSource,
     // Time window config types for observability data

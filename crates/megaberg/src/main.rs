@@ -2,98 +2,25 @@
 //!
 //! Usage: megaberg --config config.json
 //!
-//! Config JSON format (with explicit credentials):
-//! ```json
-//! {
-//!   "s3": {
-//!     "endpoint": "http://localhost:9000",
-//!     "bucket": "warehouse",
-//!     "region": "us-east-1",
-//!     "access_key": "admin",
-//!     "secret_key": "password",
-//!     "disable_config_load": true
-//!   },
-//!   "catalog": {
-//!     "type": "rest",
-//!     "uri": "http://localhost:8181",
-//!     "warehouse": "s3://warehouse"
-//!   },
-//!   "table": {
-//!     "namespace": "db",
-//!     "name": "my_table"
-//!   },
-//!   "compaction": {
-//!     "target_file_size_mb": 256,
-//!     "min_files_per_partition": 2
-//!   }
-//! }
-//! ```
-//!
-//! Config JSON format (with env credentials - AWS_ACCESS_KEY_ID, etc.):
-//! ```json
-//! {
-//!   "s3": {
-//!     "endpoint": "https://s3.us-east-1.amazonaws.com",
-//!     "bucket": "my-bucket",
-//!     "region": "us-east-1"
-//!   },
-//!   "catalog": {
-//!     "type": "glue",
-//!     "warehouse": "s3://my-bucket/warehouse",
-//!     "region": "us-east-1"
-//!   },
-//!   "table": {
-//!     "namespace": "my_database",
-//!     "name": "my_table"
-//!   }
-//! }
-//! ```
+//! See configs.rs for configuration format examples.
 
-mod commit;
 mod configs;
-pub mod sink;
+mod planner;
+mod runner;
+mod source;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
-use arrow::datatypes::SchemaRef;
-use bytes::Bytes;
 use clap::Parser;
-use engine::executor::{CompactionConfig, CompactionEngine, S3Config};
-use engine::planner::{
-    build_tasks, pack_files, CatalogConfig, IcebergSource, PackerConfig, ParquetSource,
-    TableSource,
-};
-use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableIdent};
-use iceberg_catalog_glue::GlueCatalogBuilder;
-use iceberg_catalog_rest::RestCatalogBuilder;
-use opendal::Operator;
-use parquet::arrow::parquet_to_arrow_schema;
-use parquet::basic::Compression;
-use parquet::file::reader::{FileReader, SerializedFileReader};
+use engine::planner::OutputFileInfo;
 use tracing::{info, warn};
 
-use crate::commit::{commit_compaction, commit_compaction_glue, OutputFile, TaskResult};
-use crate::configs::{Config, SourceConfigJson};
+use crate::configs::{AppConfig, ConfigFile};
+use crate::runner::TaskResult;
 
-/// Read Arrow schema from a parquet file
-async fn read_schema_from_parquet(operator: &Operator, path: &str) -> Result<SchemaRef> {
-    // Read just enough bytes to get the footer (last 8 bytes has footer size)
-    let file_bytes = operator.read(path).await
-        .with_context(|| format!("Failed to read parquet file: {}", path))?;
-
-    let reader = SerializedFileReader::new(Bytes::from(file_bytes.to_vec()))
-        .context("Failed to create parquet reader")?;
-
-    let parquet_schema = reader.metadata().file_metadata().schema_descr();
-    let arrow_schema = parquet_to_arrow_schema(parquet_schema, None)
-        .context("Failed to convert parquet schema to arrow")?;
-
-    Ok(Arc::new(arrow_schema))
-}
-
+/// Megaberg: Iceberg table compaction tool
 #[derive(Parser, Debug)]
 #[command(name = "megaberg")]
 #[command(about = "Iceberg table compaction tool")]
@@ -101,6 +28,19 @@ struct Args {
     /// Path to config JSON file
     #[arg(short, long)]
     config: PathBuf,
+}
+
+impl Args {
+    /// Load and validate configuration from the specified config file.
+    fn load_config(&self) -> Result<AppConfig> {
+        let config_str = std::fs::read_to_string(&self.config)
+            .with_context(|| format!("Failed to read config file: {}", self.config.display()))?;
+
+        let config_file: ConfigFile =
+            serde_json::from_str(&config_str).with_context(|| "Failed to parse config JSON")?;
+
+        config_file.into_app_config()
+    }
 }
 
 #[tokio::main]
@@ -114,349 +54,149 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // Parse CLI and load config
     let args = Args::parse();
-
-    // Load config
     info!(config_path = %args.config.display(), "Loading configuration");
-    let config_str = std::fs::read_to_string(&args.config)
-        .with_context(|| format!("Failed to read config file: {}", args.config.display()))?;
-    let config: Config = serde_json::from_str(&config_str)
-        .with_context(|| "Failed to parse config JSON")?;
+    let config = args.load_config()?;
 
-    info!(
-        namespace = %config.table.namespace,
-        table = %config.table.name,
-        "Starting compaction"
-    );
-
-    // Start planning timer
-    let planning_start = std::time::Instant::now();
-
-    // Build OpenDAL operator for discovery
-    let operator = config.s3.build_operator()?;
+    // Build S3 operator
+    let operator = config.build_operator()?;
     info!(
         bucket = %config.s3.bucket,
-        region = %config.s3.region,
         endpoint = %config.s3.endpoint,
-        using_env_creds = config.s3.access_key.is_none(),
         "Built S3 operator"
     );
 
-    // Step 1: Create source based on config
-    let source: Box<dyn TableSource> = match &config.source {
-        SourceConfigJson::Iceberg => {
-            info!("Loading table from Iceberg catalog...");
-            let catalog_config: CatalogConfig = (&config.catalog).into();
-            let iceberg_source = IcebergSource::new(
-                &catalog_config,
-                &config.table.namespace,
-                &config.table.name,
-            )
-            .await
-            .context("Failed to load table from catalog")?;
+    // Create source and sink (shared instance when same table)
+    let (source, sink) = source::create_source_and_sink(&config, operator).await?;
 
-            info!(
-                location = %iceberg_source.location(),
-                "Loaded table from Iceberg catalog"
-            );
-            Box::new(iceberg_source)
-        }
-        SourceConfigJson::Parquet { base_path } => {
-            info!(base_path = %base_path, "Using Parquet source with S3 listing");
+    info!(
+        source_format = ?source.format(),
+        source_location = %source.location(),
+        sink_format = ?sink.format(),
+        "Created source and sink"
+    );
 
-            let mut parquet_source =
-                ParquetSource::new(operator.clone(), base_path.clone(), config.s3.bucket.clone());
-
-            // Apply time window config if specified
-            if let Some(ref tw_config) = config.time_window {
-                info!(
-                    skip_recent = tw_config.skip_recent,
-                    granularity = ?tw_config.partition_spec.granularity,
-                    "Enabling time-windowed discovery"
-                );
-                parquet_source = parquet_source.with_time_window(tw_config.to_time_window_config());
-            }
-
-            Box::new(parquet_source)
+    // Plan: discover files from source, pack into groups, build tasks
+    let plan_result = match planner::plan(source.as_ref(), &config).await? {
+        Some(result) => result,
+        None => {
+            warn!("No files to compact");
+            return Ok(());
         }
     };
 
-    info!(
-        location = %source.location(),
-        source_type = ?config.source,
-        "Source configured"
+    // Execute compaction
+    let exec_result = runner::run(plan_result.tasks, plan_result.schema, &config).await?;
+
+    // Print summary
+    print_summary(
+        plan_result.planning_time,
+        exec_result.execution_time,
+        exec_result.worker_count,
+        plan_result.total_bytes,
+        exec_result.total_input_files,
+        exec_result.total_output_files,
+        exec_result.total_output_bytes,
     );
 
-    // Step 2: Discover files
-    info!("Discovering files from manifests...");
-    let partition_map = source.discover().await
-        .context("Failed to discover files")?;
-
-    let total_files: usize = partition_map.values().map(|v| v.len()).sum();
-    let total_bytes: u64 = partition_map
-        .values()
-        .flat_map(|v| v.iter())
-        .map(|f| f.size_bytes)
-        .sum();
-
-    info!(
-        partitions = partition_map.len(),
-        files = total_files,
-        total_mb = total_bytes / 1024 / 1024,
-        "Discovery complete"
-    );
-
-    if total_files == 0 {
-        warn!("No files found to compact");
-        return Ok(());
+    // Commit to sink via trait
+    if !exec_result.task_results.is_empty() {
+        commit_results(sink.as_ref(), exec_result.task_results).await?;
     }
 
-    // Step 3: Pack files into groups
-    let compaction_cfg = config.compaction.clone().unwrap_or_default();
+    Ok(())
+}
 
-    let packer_config = PackerConfig {
-        target_file_size: compaction_cfg.target_file_size_mb * 1024 * 1024,
-        min_files_per_partition: compaction_cfg.min_files_per_partition,
-    };
-
-    info!(
-        target_file_size_mb = compaction_cfg.target_file_size_mb,
-        min_files = compaction_cfg.min_files_per_partition,
-        "Packing files into groups"
-    );
-
-    let file_groups = pack_files(partition_map, &packer_config);
-
-    if file_groups.is_empty() {
-        info!("No file groups to compact (partitions may have too few files)");
-        return Ok(());
-    }
-
-    info!(groups = file_groups.len(), "Created file groups");
-
-    // Step 4: Build compaction tasks
-    let tasks = build_tasks(file_groups, source.location());
-    let planning_time = planning_start.elapsed();
-    info!(
-        tasks = tasks.len(),
-        planning_time_ms = planning_time.as_millis(),
-        "Built compaction tasks"
-    );
-
-    // Step 5: Read schema from first input file
-    let first_file = tasks
-        .first()
-        .and_then(|t| t.input_files.first())
-        .context("No input files found")?;
-
-    // Strip s3://bucket/ prefix from the path
-    let s3_prefix = format!("s3://{}/", config.s3.bucket);
-    let first_file_path = first_file.strip_prefix(&s3_prefix).unwrap_or(first_file);
-
-    info!(file = %first_file_path, "Reading schema from first parquet file");
-    let schema = read_schema_from_parquet(&operator, first_file_path).await
-        .context("Failed to read schema from parquet file")?;
-    info!(schema = ?schema, "Read schema with {} fields", schema.fields().len());
-
-    // Step 6: Create single compaction engine and reuse for all tasks
-    let s3_config: S3Config = (&config.s3).into();
-    let compaction_config = CompactionConfig {
-        target_file_size_bytes: compaction_cfg.target_file_size_mb * 1024 * 1024,
-        row_group_size: 300_000, // Match test config for better throughput
-        compression: Compression::UNCOMPRESSED,
-        ..Default::default()
-    };
-
-    info!("Creating compaction engine...");
-    let engine = CompactionEngine::with_s3(schema, &s3_config, compaction_config)
-        .await
-        .context("Failed to create compaction engine")?;
-
-    // Step 7: Execute tasks sequentially
-    let compaction_start = std::time::Instant::now();
-    let mut total_input_files = 0usize;
-    let mut total_output_files = 0usize;
-    let mut total_output_bytes = 0u64;
-    let mut task_durations: Vec<std::time::Duration> = Vec::new();
-    let mut task_results: Vec<TaskResult> = Vec::new();
-
-    for (i, task) in tasks.iter().enumerate() {
-        info!(
-            task = i + 1,
-            total = tasks.len(),
-            partition = %task.partition,
-            input_files = task.input_files.len(),
-            "Executing compaction task"
-        );
-
-        let task_start = std::time::Instant::now();
-        let result = engine
-            .compact(&task.task_id, task.input_files.clone(), &task.output_prefix)
-            .await;
-
-        match result {
-            Ok(written_files) => {
-                let task_duration = task_start.elapsed();
-                task_durations.push(task_duration);
-                let task_bytes: u64 = written_files.iter().map(|f| f.size_bytes).sum();
-                let task_records: u64 = written_files.iter().map(|f| f.record_count).sum();
-
-                info!(
-                    task = i + 1,
-                    output_files = written_files.len(),
-                    output_mb = task_bytes / 1024 / 1024,
-                    records = task_records,
-                    duration_secs = task_duration.as_secs_f64(),
-                    throughput_mb_s = (task_bytes as f64 / 1024.0 / 1024.0) / task_duration.as_secs_f64(),
-                    "Task completed"
-                );
-
-                // Track task result for commit
-                task_results.push(TaskResult {
-                    input_files: task.input_files.clone(),
-                    output_files: written_files
-                        .iter()
-                        .map(|f| OutputFile {
-                            path: f.path.clone(),
-                            size_bytes: f.size_bytes,
-                            record_count: f.record_count,
-                        })
-                        .collect(),
-                });
-
-                total_input_files += task.input_files.len();
-                total_output_files += written_files.len();
-                total_output_bytes += task_bytes;
-            }
-            Err(e) => {
-                warn!(
-                    task = i + 1,
-                    partition = %task.partition,
-                    error = %e,
-                    "Task failed, continuing with next task"
-                );
-            }
-        }
-    }
-
-    let total_compaction_time = compaction_start.elapsed();
-
-    // Compute average task duration
-    let avg_task_duration = if !task_durations.is_empty() {
-        let total_task_time: std::time::Duration = task_durations.iter().sum();
-        total_task_time / task_durations.len() as u32
+/// Print compaction summary to console and logs.
+fn print_summary(
+    planning_time: Duration,
+    execution_time: Duration,
+    worker_count: usize,
+    total_input_bytes: u64,
+    total_input_files: usize,
+    total_output_files: usize,
+    total_output_bytes: u64,
+) {
+    let input_throughput =
+        (total_input_bytes as f64 / 1024.0 / 1024.0) / execution_time.as_secs_f64();
+    let avg_task_duration_secs = if total_input_files > 0 {
+        execution_time.as_secs_f64() / total_input_files as f64 * worker_count as f64
     } else {
-        std::time::Duration::ZERO
+        0.0
     };
-
-    // Use input bytes (from discovery) for throughput - matches test methodology
-    let input_throughput = (total_bytes as f64 / 1024.0 / 1024.0) / total_compaction_time.as_secs_f64();
 
     info!(
         planning_time_ms = planning_time.as_millis(),
-        avg_task_time_secs = avg_task_duration.as_secs_f64(),
-        total_compaction_time_secs = total_compaction_time.as_secs_f64(),
+        avg_task_time_secs = avg_task_duration_secs,
+        total_compaction_time_secs = execution_time.as_secs_f64(),
+        workers = worker_count,
         input_files = total_input_files,
-        input_mb = total_bytes / 1024 / 1024,
+        input_mb = total_input_bytes / 1024 / 1024,
         output_files = total_output_files,
         output_mb = total_output_bytes / 1024 / 1024,
         throughput_mb_s = input_throughput,
         "Compaction complete"
     );
 
-    // Print summary table
     println!("\n========== COMPACTION SUMMARY ==========");
-    println!("Planning time:           {:>10.2} ms", planning_time.as_secs_f64() * 1000.0);
-    println!("Avg task compaction:     {:>10.2} s", avg_task_duration.as_secs_f64());
-    println!("Total compaction time:   {:>10.2} s", total_compaction_time.as_secs_f64());
+    println!("Workers:                 {:>10}", worker_count);
+    println!(
+        "Planning time:           {:>10.2} ms",
+        planning_time.as_secs_f64() * 1000.0
+    );
+    println!("Avg task compaction:     {:>10.2} s", avg_task_duration_secs);
+    println!(
+        "Total compaction time:   {:>10.2} s",
+        execution_time.as_secs_f64()
+    );
     println!("-----------------------------------------");
     println!("Input files:             {:>10}", total_input_files);
-    println!("Input size:              {:>10} MB", total_bytes / 1024 / 1024);
+    println!(
+        "Input size:              {:>10} MB",
+        total_input_bytes / 1024 / 1024
+    );
     println!("Output files:            {:>10}", total_output_files);
-    println!("Output size:             {:>10} MB", total_output_bytes / 1024 / 1024);
+    println!(
+        "Output size:             {:>10} MB",
+        total_output_bytes / 1024 / 1024
+    );
     println!("Throughput (input):      {:>10.2} MB/s", input_throughput);
     println!("=========================================\n");
+}
 
-    // Step 8: Commit compaction results to catalog
-    if !task_results.is_empty() {
-        info!("Committing compaction results to catalog...");
+/// Commit compaction results using the TableSink trait.
+async fn commit_results(
+    sink: &dyn engine::planner::TableSink,
+    task_results: Vec<TaskResult>,
+) -> Result<()> {
+    let mut added_files = Vec::new();
+    let mut removed_files = Vec::new();
 
-        let table_ident = TableIdent::new(
-            NamespaceIdent::new(config.table.namespace.clone()),
-            config.table.name.clone(),
-        );
-
-        match &config.catalog {
-            crate::configs::CatalogConfigJson::Rest { uri, warehouse } => {
-                // Build REST catalog
-                let mut props = HashMap::new();
-                props.insert("uri".to_string(), uri.clone());
-                if let Some(wh) = warehouse {
-                    props.insert("warehouse".to_string(), wh.clone());
-                }
-                props.insert("s3.endpoint".to_string(), config.s3.endpoint.clone());
-                props.insert("s3.region".to_string(), config.s3.region.clone());
-                if let Some(ref ak) = config.s3.access_key {
-                    props.insert("s3.access-key-id".to_string(), ak.clone());
-                }
-                if let Some(ref sk) = config.s3.secret_key {
-                    props.insert("s3.secret-access-key".to_string(), sk.clone());
-                }
-                props.insert("s3.allow-http".to_string(), "true".to_string());
-                props.insert("s3.path-style-access".to_string(), "true".to_string());
-
-                let catalog = RestCatalogBuilder::default()
-                    .load("rest", props)
-                    .await
-                    .context("Failed to build REST catalog")?;
-
-                let table = catalog
-                    .load_table(&table_ident)
-                    .await
-                    .context("Failed to load table for commit")?;
-
-                commit_compaction(
-                    &table,
-                    task_results,
-                    &config.s3.bucket,
-                    uri,
-                    &config.table.namespace,
-                    &config.table.name,
-                )
-                .await
-                .context("Failed to commit compaction")?;
-            }
-            crate::configs::CatalogConfigJson::Glue { warehouse, region, .. } => {
-                // Build Glue catalog
-                let mut props = HashMap::new();
-                props.insert("warehouse".to_string(), warehouse.clone());
-                if let Some(r) = region {
-                    props.insert("region".to_string(), r.clone());
-                }
-
-                let catalog = GlueCatalogBuilder::default()
-                    .load("glue", props)
-                    .await
-                    .context("Failed to build Glue catalog")?;
-
-                let table = catalog
-                    .load_table(&table_ident)
-                    .await
-                    .context("Failed to load table for commit")?;
-
-                commit_compaction_glue(
-                    &catalog,
-                    &table,
-                    task_results,
-                    &config.s3.bucket,
-                )
-                .await
-                .context("Failed to commit compaction to Glue")?;
-            }
-        }
-
-        println!("Compaction committed to catalog!");
+    for result in task_results {
+        removed_files.extend(result.input_files);
+        added_files.extend(result.output_files.into_iter().map(|f| OutputFileInfo {
+            path: f.path,
+            size_bytes: f.size_bytes,
+            record_count: f.record_count,
+        }));
     }
+
+    info!(
+        added = added_files.len(),
+        removed = removed_files.len(),
+        format = ?sink.format(),
+        "Committing compaction results"
+    );
+
+    let result = sink.commit(added_files, removed_files).await?;
+
+    info!(
+        snapshot_id = ?result.snapshot_id,
+        files_added = result.files_added,
+        files_removed = result.files_removed,
+        "Commit complete"
+    );
 
     Ok(())
 }

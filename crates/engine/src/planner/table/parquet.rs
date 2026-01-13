@@ -20,6 +20,7 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use super::super::discovery::{FileInfo, PartitionFileMap, TableFormat};
+use super::sink::{CommitResult, OutputFileInfo, TableSink};
 use super::source::TableSource;
 
 /// Minimum bytes to read for parquet footer (magic + footer length).
@@ -680,6 +681,33 @@ impl TableSource for ParquetSource {
     }
 }
 
+#[async_trait]
+impl TableSink for ParquetSource {
+    fn format(&self) -> TableFormat {
+        TableFormat::Parquet
+    }
+
+    async fn commit(
+        &self,
+        added_files: Vec<OutputFileInfo>,
+        _removed_files: Vec<String>,
+    ) -> Result<CommitResult> {
+        // Parquet has no catalog - files are written directly to S3.
+        // Nothing to commit, just log the result.
+        info!(
+            added = added_files.len(),
+            base_path = %self.base_path,
+            "Parquet sink: files written (no catalog commit needed)"
+        );
+
+        Ok(CommitResult {
+            snapshot_id: None,
+            files_added: added_files.len(),
+            files_removed: 0, // Parquet doesn't track removed files
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -716,5 +744,220 @@ mod tests {
             PartitionGranularity::Minute.truncate(dt),
             Utc.with_ymd_and_hms(2024, 1, 15, 14, 35, 0).unwrap()
         );
+    }
+
+    /// Helper to create a test ParquetSource (operator doesn't matter for unit tests)
+    fn create_test_source() -> ParquetSource {
+        // Create a dummy operator - we won't actually use it in unit tests
+        let builder = opendal::services::Memory::default();
+        let operator = opendal::Operator::new(builder).unwrap().finish();
+        ParquetSource::new(operator, "data/events/".to_string(), "test-bucket".to_string())
+    }
+
+    fn create_time_window_config() -> TimeWindowConfig {
+        TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![
+                    PartitionTimeField {
+                        name: "dt".to_string(),
+                        format: "%Y-%m-%d".to_string(),
+                        component: TimeComponent::Date,
+                    },
+                    PartitionTimeField {
+                        name: "hour".to_string(),
+                        format: "%H".to_string(),
+                        component: TimeComponent::Hour,
+                    },
+                ],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Hour,
+            },
+            lookback: LookbackWindow::Duration { hours: 3, minutes: 0 },
+            skip_recent: 1,
+        }
+    }
+
+    #[test]
+    fn test_parse_partition_time() {
+        let source = create_test_source();
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "dt".to_string(),
+                    format: "%Y-%m-%d".to_string(),
+                    component: TimeComponent::Date,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let ts = source.parse_partition_time("dt=2024-01-15/hour=14", &spec).unwrap();
+        assert_eq!(ts, Utc.with_ymd_and_hms(2024, 1, 15, 14, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_parse_partition_time_year_month_day_hour() {
+        let source = create_test_source();
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "year".to_string(),
+                    format: "%Y".to_string(),
+                    component: TimeComponent::Year,
+                },
+                PartitionTimeField {
+                    name: "month".to_string(),
+                    format: "%m".to_string(),
+                    component: TimeComponent::Month,
+                },
+                PartitionTimeField {
+                    name: "day".to_string(),
+                    format: "%d".to_string(),
+                    component: TimeComponent::Day,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let ts = source.parse_partition_time("year=2024/month=01/day=15/hour=14", &spec).unwrap();
+        assert_eq!(ts, Utc.with_ymd_and_hms(2024, 1, 15, 14, 0, 0).unwrap());
+    }
+
+    #[test]
+    fn test_time_window_filtering() {
+        let source = create_test_source();
+        let config = create_time_window_config();
+
+        // Simulate current time as 2024-01-15 15:30:00 UTC
+        // With 3 hour lookback and skip_recent=1:
+        //   - cutoff = 12:30 (anything older is skipped)
+        //   - skip_after = 15:00 (current hour boundary - 1 hour)
+        //
+        // So partitions hour=13, hour=14 should be included
+        // hour=12 should be skipped (too old - before 12:30 cutoff)
+        // hour=15 should be skipped (too recent - at or after 15:00)
+
+        // We can't easily mock time, but we can test the logic with a manual calculation
+        // Let's verify the filtering logic by creating partitions and checking the output
+
+        // Create test partitions
+        let partitions = vec![
+            "data/events/dt=2024-01-15/hour=10/".to_string(), // too old
+            "data/events/dt=2024-01-15/hour=11/".to_string(), // too old
+            "data/events/dt=2024-01-15/hour=12/".to_string(), // borderline old
+            "data/events/dt=2024-01-15/hour=13/".to_string(), // should include
+            "data/events/dt=2024-01-15/hour=14/".to_string(), // should include
+            "data/events/dt=2024-01-15/hour=15/".to_string(), // too recent (current)
+        ];
+
+        // The actual filtering depends on current time, so let's just verify
+        // that the filter function doesn't panic and returns reasonable results
+        let result = source.filter_partitions_by_time(partitions, &config);
+        assert!(result.is_ok());
+
+        // The result depends on current time - in a real scenario we'd mock time
+        // But we can verify the function runs without error
+        let filtered = result.unwrap();
+        println!("Filtered partitions: {:?}", filtered);
+
+        // At minimum, very old partitions should be filtered out
+        // and very recent ones too (depending on when test runs)
+    }
+
+    #[test]
+    fn test_time_window_filtering_with_fixed_time() {
+        // Test with partitions that are definitely old (2020) - should all be filtered
+        let source = create_test_source();
+        let config = TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![
+                    PartitionTimeField {
+                        name: "dt".to_string(),
+                        format: "%Y-%m-%d".to_string(),
+                        component: TimeComponent::Date,
+                    },
+                    PartitionTimeField {
+                        name: "hour".to_string(),
+                        format: "%H".to_string(),
+                        component: TimeComponent::Hour,
+                    },
+                ],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Hour,
+            },
+            lookback: LookbackWindow::Duration { hours: 2, minutes: 0 },
+            skip_recent: 1,
+        };
+
+        // All 2020 partitions should be filtered as "too old"
+        let old_partitions = vec![
+            "data/events/dt=2020-01-15/hour=10/".to_string(),
+            "data/events/dt=2020-01-15/hour=11/".to_string(),
+            "data/events/dt=2020-01-15/hour=12/".to_string(),
+        ];
+
+        let result = source.filter_partitions_by_time(old_partitions, &config).unwrap();
+        assert!(result.is_empty(), "Old partitions from 2020 should all be filtered out");
+    }
+
+    #[test]
+    fn test_time_window_filtering_future_partitions() {
+        // Test with partitions that are in the future (2030) - should be filtered as "too recent"
+        let source = create_test_source();
+        let config = TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![
+                    PartitionTimeField {
+                        name: "dt".to_string(),
+                        format: "%Y-%m-%d".to_string(),
+                        component: TimeComponent::Date,
+                    },
+                    PartitionTimeField {
+                        name: "hour".to_string(),
+                        format: "%H".to_string(),
+                        component: TimeComponent::Hour,
+                    },
+                ],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Hour,
+            },
+            lookback: LookbackWindow::Duration { hours: 2, minutes: 0 },
+            skip_recent: 1,
+        };
+
+        // All 2030 partitions should be filtered as "too recent"
+        let future_partitions = vec![
+            "data/events/dt=2030-01-15/hour=10/".to_string(),
+            "data/events/dt=2030-01-15/hour=11/".to_string(),
+        ];
+
+        let result = source.filter_partitions_by_time(future_partitions, &config).unwrap();
+        assert!(result.is_empty(), "Future partitions from 2030 should all be filtered out as too recent");
+    }
+
+    #[test]
+    fn test_lookback_window_duration_conversion() {
+        let lw = LookbackWindow::Duration { hours: 2, minutes: 30 };
+        let duration = lw.to_duration(PartitionGranularity::Hour);
+        assert_eq!(duration, Duration::hours(2) + Duration::minutes(30));
+
+        let lw_partitions = LookbackWindow::Partitions { count: 5 };
+        let duration = lw_partitions.to_duration(PartitionGranularity::Hour);
+        assert_eq!(duration, Duration::hours(5));
+
+        let duration = lw_partitions.to_duration(PartitionGranularity::Day);
+        assert_eq!(duration, Duration::days(5));
     }
 }

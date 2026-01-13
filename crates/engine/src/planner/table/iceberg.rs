@@ -1,6 +1,7 @@
-//! Iceberg table source implementation.
+//! Iceberg table implementation (source + sink).
 //!
-//! Uses iceberg-rust to load table metadata and schema from catalogs.
+//! Uses iceberg-rust to load table metadata and schema from catalogs,
+//! and commit compaction results back to the catalog.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,16 +17,17 @@ use iceberg::table::Table;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 use iceberg_catalog_glue::GlueCatalogBuilder;
 use iceberg_catalog_rest::RestCatalogBuilder;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::super::discovery::{FileInfo, PartitionFileMap, TableFormat};
+use super::sink::{CommitResult, OutputFileInfo, TableSink};
 use super::source::TableSource;
 
 /// Default number of manifests to read in parallel.
 const DEFAULT_MANIFEST_PARALLELISM: usize = 8;
 
 /// Configuration for connecting to an Iceberg catalog.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CatalogConfig {
     /// REST catalog (Tabular, Polaris, Nessie, etc.)
     Rest {
@@ -42,18 +44,20 @@ pub enum CatalogConfig {
     },
 }
 
-/// Iceberg table source.
+/// Iceberg table - implements both TableSource and TableSink.
 ///
-/// Uses iceberg-rust to load table metadata from REST or Glue catalogs.
-pub struct IcebergSource {
+/// Uses iceberg-rust to:
+/// - Load table metadata from REST or Glue catalogs (source)
+/// - Commit compaction results back to the catalog (sink)
+pub struct IcebergTable {
     /// The iceberg-rust table (contains metadata, schema, snapshots)
     table: Table,
     /// Number of manifests to read in parallel
     manifest_parallelism: usize,
 }
 
-impl IcebergSource {
-    /// Create a new IcebergSource by loading a table from the catalog.
+impl IcebergTable {
+    /// Create a new IcebergTable by loading from the catalog.
     pub async fn new(config: &CatalogConfig, namespace: &str, table_name: &str) -> Result<Self> {
         let table = Self::load_table(config, namespace, table_name).await?;
         Ok(Self {
@@ -325,7 +329,7 @@ impl IcebergSource {
 }
 
 #[async_trait]
-impl TableSource for IcebergSource {
+impl TableSource for IcebergTable {
     fn format(&self) -> TableFormat {
         TableFormat::Iceberg
     }
@@ -354,5 +358,36 @@ impl TableSource for IcebergSource {
         info!(partitions = map.len(), total_files, "discovery complete");
 
         Ok(map)
+    }
+}
+
+#[async_trait]
+impl TableSink for IcebergTable {
+    fn format(&self) -> TableFormat {
+        TableFormat::Iceberg
+    }
+
+    async fn commit(
+        &self,
+        added_files: Vec<OutputFileInfo>,
+        removed_files: Vec<String>,
+    ) -> Result<CommitResult> {
+        // TODO: Implement actual Iceberg commit using iceberg-rust
+        // This will involve:
+        // 1. Creating a new manifest with added_files
+        // 2. Marking removed_files as deleted
+        // 3. Creating a new snapshot
+        // 4. Committing to the catalog
+        warn!(
+            added = added_files.len(),
+            removed = removed_files.len(),
+            "Iceberg commit not yet implemented - files written but not committed to catalog"
+        );
+
+        Ok(CommitResult {
+            snapshot_id: None,
+            files_added: added_files.len(),
+            files_removed: removed_files.len(),
+        })
     }
 }
