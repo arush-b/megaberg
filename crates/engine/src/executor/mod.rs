@@ -3,7 +3,7 @@ mod engine;
 mod metrics;
 mod writer;
 
-pub use config::{CompactionConfig, ExecutorConfig, S3Config};
+pub use config::{CompactionConfig, ExecutorConfig, S3Config, StorageError};
 pub use engine::{CompactionEngine, CompactionError};
 pub use metrics::{ExecutorMetrics, MetricsSnapshot};
 pub use writer::{

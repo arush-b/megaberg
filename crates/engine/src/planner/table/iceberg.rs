@@ -367,6 +367,10 @@ impl TableSink for IcebergTable {
         TableFormat::Iceberg
     }
 
+    fn location(&self) -> &str {
+        self.table.metadata().location()
+    }
+
     async fn commit(
         &self,
         added_files: Vec<OutputFileInfo>,

@@ -1,0 +1,23 @@
+{
+  "s3": {
+    "endpoint": "http://localhost:9000",
+    "bucket": "lakehouse",
+    "region": "us-east-1",
+    "access_key": "admin",
+    "secret_key": "password",
+    "use_default_credentials": false
+  },
+  "source": {
+    "type": "parquet",
+    "base_path": "input_data/"
+  },
+  "sink": {
+    "type": "parquet",
+    "output_path": "output_data/"
+  },
+  "compaction": {
+    "target_file_size_mb": 128,
+    "min_files_per_partition": 2,
+    "parallelism": 4
+  }
+}

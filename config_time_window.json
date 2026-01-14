@@ -1,0 +1,35 @@
+{
+  "s3": {
+    "endpoint": "http://localhost:9000",
+    "bucket": "lakehouse",
+    "region": "us-east-1",
+    "access_key": "admin",
+    "secret_key": "password",
+    "use_default_credentials": false
+  },
+  "source": {
+    "type": "parquet",
+    "base_path": "time_test_input/",
+    "time_window": {
+      "partition_spec": {
+        "fields": [
+          {"name": "dt", "format": "%Y-%m-%d", "component": "date"},
+          {"name": "hour", "format": "%H", "component": "hour"},
+          {"name": "minute", "format": "%M", "component": "minute"}
+        ],
+        "granularity": "minute",
+        "timezone": "UTC"
+      },
+      "lookback": {"type": "duration", "hours": 1, "minutes": 30},
+      "skip_recent": 2
+    }
+  },
+  "sink": {
+    "type": "parquet",
+    "output_path": "time_test_output/"
+  },
+  "compaction": {
+    "target_file_size_mb": 128,
+    "min_files_per_partition": 2
+  }
+}

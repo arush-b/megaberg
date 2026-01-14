@@ -1,0 +1,28 @@
+{
+  "s3": {
+    "endpoint": "http://localhost:9000",
+    "access_key": "admin",
+    "secret_key": "password",
+    "bucket": "lakehouse",
+    "region": "us-east-1",
+    "use_default_credentials": false
+  },
+  "source": {
+    "type": "parquet",
+    "base_path": "compaction_test/"
+  },
+  "sink": {
+    "type": "iceberg",
+    "catalog": {
+      "type": "rest",
+      "uri": "http://localhost:8181",
+      "warehouse": "s3://lakehouse"
+    },
+    "namespace": "default",
+    "table": "compaction_test"
+  },
+  "compaction": {
+    "target_file_size_mb": 256,
+    "min_files_per_partition": 2
+  }
+}

@@ -38,7 +38,7 @@ pub async fn create_source_and_sink(
             );
 
             info!(
-                location = %iceberg_table.location(),
+                location = %TableSource::location(iceberg_table.as_ref()),
                 "Loaded Iceberg table (shared source/sink)"
             );
 
@@ -68,7 +68,7 @@ async fn create_source(config: &AppConfig, operator: Operator) -> Result<Arc<dyn
                 .context("Failed to load table from catalog")?;
 
             info!(
-                location = %iceberg_table.location(),
+                location = %TableSource::location(&iceberg_table),
                 "Loaded source table from Iceberg catalog"
             );
             Ok(Arc::new(iceberg_table))
@@ -112,7 +112,7 @@ async fn create_sink(config: &AppConfig, operator: Operator) -> Result<Arc<dyn T
                 .context("Failed to load sink table from catalog")?;
 
             info!(
-                location = %iceberg_table.location(),
+                location = %TableSink::location(&iceberg_table),
                 "Loaded sink table from Iceberg catalog"
             );
             Ok(Arc::new(iceberg_table))

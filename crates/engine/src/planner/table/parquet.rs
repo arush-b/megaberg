@@ -687,6 +687,10 @@ impl TableSink for ParquetSource {
         TableFormat::Parquet
     }
 
+    fn location(&self) -> &str {
+        &self.base_path
+    }
+
     async fn commit(
         &self,
         added_files: Vec<OutputFileInfo>,

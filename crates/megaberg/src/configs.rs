@@ -60,27 +60,9 @@ pub enum SinkConfig {
 impl AppConfig {
     /// Build an OpenDAL operator for S3.
     pub fn build_operator(&self) -> Result<Operator> {
-        let mut builder = opendal::services::S3::default()
-            .bucket(&self.s3.bucket)
-            .region(&self.s3.region)
-            .endpoint(&self.s3.endpoint);
-
-        if !self.s3.access_key.is_empty() {
-            builder = builder.access_key_id(&self.s3.access_key);
-        }
-        if !self.s3.secret_key.is_empty() {
-            builder = builder.secret_access_key(&self.s3.secret_key);
-        }
-
-        if !self.s3.use_default_credentials {
-            builder = builder.disable_config_load();
-        }
-
-        let op = Operator::new(builder)
-            .context("Failed to create OpenDAL S3 operator")?
-            .finish();
-
-        Ok(op)
+        self.s3
+            .build_operator()
+            .context("Failed to create S3 operator")
     }
 }
 

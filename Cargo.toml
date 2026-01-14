@@ -35,7 +35,8 @@ iceberg-catalog-glue = "0.7"
 
 # Storage
 object_store = { version = "0.12", features = ["aws"] }
-opendal = { version = "0.51", features = ["services-s3"] }
+opendal = { version = "0.54", features = ["services-s3"] }
+object_store_opendal = "0.54"
 
 # Query engine
 datafusion = "48"

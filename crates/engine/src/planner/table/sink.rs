@@ -35,6 +35,9 @@ pub trait TableSink: Send + Sync {
     /// What format is this sink?
     fn format(&self) -> TableFormat;
 
+    /// Base location where output files should be written.
+    fn location(&self) -> &str;
+
     /// Commit compaction results.
     ///
     /// - added_files: newly written compacted files

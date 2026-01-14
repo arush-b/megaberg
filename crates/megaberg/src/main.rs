@@ -78,7 +78,8 @@ async fn main() -> Result<()> {
     );
 
     // Plan: discover files from source, pack into groups, build tasks
-    let plan_result = match planner::plan(source.as_ref(), &config).await? {
+    // Output goes to sink location
+    let plan_result = match planner::plan(source.as_ref(), sink.as_ref(), &config).await? {
         Some(result) => result,
         None => {
             warn!("No files to compact");

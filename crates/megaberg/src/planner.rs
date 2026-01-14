@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use arrow::datatypes::SchemaRef;
-use engine::planner::{build_tasks, pack_files, CompactionTask, PackerConfig, TableSource};
+use engine::planner::{build_tasks, pack_files, CompactionTask, PackerConfig, TableSink, TableSource};
 use tracing::info;
 
 use crate::configs::AppConfig;
@@ -24,7 +24,11 @@ pub struct PlanResult {
 /// Run the planning phase: discover files, pack into groups, build tasks.
 ///
 /// Returns `None` if there are no files to compact.
-pub async fn plan(source: &dyn TableSource, config: &AppConfig) -> Result<Option<PlanResult>> {
+pub async fn plan(
+    source: &dyn TableSource,
+    sink: &dyn TableSink,
+    config: &AppConfig,
+) -> Result<Option<PlanResult>> {
     let planning_start = Instant::now();
 
     // Get schema from source (via trait)
@@ -75,8 +79,8 @@ pub async fn plan(source: &dyn TableSource, config: &AppConfig) -> Result<Option
 
     info!(groups = file_groups.len(), "Created file groups");
 
-    // Build tasks
-    let tasks = build_tasks(file_groups, source.location());
+    // Build tasks - output goes to sink location
+    let tasks = build_tasks(file_groups, sink.location());
     let planning_time = planning_start.elapsed();
 
     info!(

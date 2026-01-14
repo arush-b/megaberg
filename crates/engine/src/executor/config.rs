@@ -1,5 +1,14 @@
+use opendal::Operator;
 use parquet::basic::Compression;
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+/// Errors that can occur when building storage operators.
+#[derive(Debug, Error)]
+pub enum StorageError {
+    #[error("OpenDAL error: {0}")]
+    OpenDal(#[from] opendal::Error),
+}
 
 /// S3-compatible storage configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,6 +40,40 @@ impl Default for S3Config {
             region: "us-east-1".to_string(),
             use_default_credentials: false,
         }
+    }
+}
+
+impl S3Config {
+    /// Build an OpenDAL operator for S3 access.
+    pub fn build_operator(&self) -> Result<Operator, StorageError> {
+        let mut builder = opendal::services::S3::default()
+            .bucket(&self.bucket)
+            .region(&self.region)
+            .endpoint(&self.endpoint);
+
+        if self.use_default_credentials {
+            // Read credentials from environment variables
+            // Disable EC2 metadata to avoid timeouts on non-EC2 machines
+            if let Ok(access_key) = std::env::var("AWS_ACCESS_KEY_ID") {
+                builder = builder.access_key_id(&access_key);
+            }
+            if let Ok(secret_key) = std::env::var("AWS_SECRET_ACCESS_KEY") {
+                builder = builder.secret_access_key(&secret_key);
+            }
+            if let Ok(token) = std::env::var("AWS_SESSION_TOKEN") {
+                builder = builder.session_token(&token);
+            }
+            builder = builder.disable_ec2_metadata();
+        } else {
+            // Use explicit credentials from config
+            builder = builder
+                .access_key_id(&self.access_key)
+                .secret_access_key(&self.secret_key)
+                .disable_config_load()
+                .disable_ec2_metadata();
+        }
+
+        Ok(Operator::new(builder)?.finish())
     }
 }
 
