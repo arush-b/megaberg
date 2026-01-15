@@ -4,6 +4,7 @@ members = [
     "crates/megaberg",
     "crates/engine",
     "crates/common",
+    "crates/committer",
     "crates/iceberg-data-gen",
 ]
 

@@ -1,0 +1,19 @@
+[package]
+name = "committer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+tracing = "0.1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v7"] }
+
+# Iceberg
+iceberg.workspace = true
+iceberg-catalog-glue.workspace = true
+
+# AWS
+aws-config = "1"
+aws-sdk-glue = "1"
