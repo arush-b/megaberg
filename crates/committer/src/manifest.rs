@@ -6,8 +6,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use iceberg::io::FileIO;
 use iceberg::spec::{
-    DataContentType, DataFile, DataFileBuilder, DataFileFormat, ManifestEntry, ManifestFile,
-    ManifestListWriter, ManifestStatus, ManifestWriterBuilder, PartitionSpec, Schema, Struct,
+    DataContentType, DataFileBuilder, DataFileFormat, ManifestFile,
+    ManifestListWriter, ManifestWriterBuilder, PartitionSpec, Schema, Struct,
 };
 
 use crate::types::{CommitContext, DataFileInfo};
@@ -116,8 +116,11 @@ pub async fn write_delete_manifest(
             .build()
             .context("Failed to build DataFile for deletion")?;
 
+        // Use add_delete_file to mark the file as DELETED
+        // sequence_number: the original sequence when file was added (we use current for now)
+        // file_sequence_number: None since we don't track the original
         writer
-            .delete_file(data_file, ctx.new_sequence_number)
+            .add_delete_file(data_file, ctx.new_sequence_number, None)
             .context("Failed to add delete entry to manifest")?;
     }
 
