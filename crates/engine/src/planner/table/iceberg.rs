@@ -17,7 +17,9 @@ use iceberg::table::Table;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 use iceberg_catalog_glue::GlueCatalogBuilder;
 use iceberg_catalog_rest::RestCatalogBuilder;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
+
+use committer::{DataFileInfo, GlueCommitter, GlueConfig};
 
 use super::super::discovery::{FileInfo, PartitionFileMap, TableFormat};
 use super::sink::{CommitResult, OutputFileInfo, TableSink};
@@ -54,24 +56,91 @@ pub struct IcebergTable {
     table: Table,
     /// Number of manifests to read in parallel
     manifest_parallelism: usize,
+    /// Committer for writing back to Glue catalog
+    committer: GlueCommitter,
+    /// S3 bucket (extracted from table location)
+    s3_bucket: String,
+    /// Cached file info from discovery (path -> FileInfo)
+    file_info_cache: std::sync::RwLock<HashMap<String, FileInfo>>,
 }
 
 impl IcebergTable {
     /// Create a new IcebergTable by loading from the catalog.
     pub async fn new(config: &CatalogConfig, namespace: &str, table_name: &str) -> Result<Self> {
         let table = Self::load_table(config, namespace, table_name).await?;
+
+        // Extract bucket from table location (s3://bucket/path -> bucket)
+        let location = table.metadata().location();
+        let s3_bucket = Self::extract_bucket(location)?;
+
+        // Create committer based on catalog config
+        let committer = Self::create_committer(config)?;
+
         Ok(Self {
             table,
             manifest_parallelism: DEFAULT_MANIFEST_PARALLELISM,
+            committer,
+            s3_bucket,
+            file_info_cache: std::sync::RwLock::new(HashMap::new()),
         })
     }
 
-    /// Create from an existing iceberg-rust Table.
-    pub fn from_table(table: Table) -> Self {
-        Self {
+    /// Extract S3 bucket from location URL.
+    fn extract_bucket(location: &str) -> Result<String> {
+        // s3://bucket/path or s3a://bucket/path
+        let stripped = location
+            .strip_prefix("s3://")
+            .or_else(|| location.strip_prefix("s3a://"))
+            .context("Table location is not an S3 path")?;
+
+        let bucket = stripped
+            .split('/')
+            .next()
+            .context("Invalid S3 path")?
+            .to_string();
+
+        Ok(bucket)
+    }
+
+    /// Create a GlueCommitter from catalog config.
+    fn create_committer(config: &CatalogConfig) -> Result<GlueCommitter> {
+        match config {
+            CatalogConfig::Glue {
+                warehouse, region, ..
+            } => {
+                let glue_config = GlueConfig {
+                    warehouse: warehouse.clone(),
+                    region: region.clone(),
+                };
+                Ok(GlueCommitter::new(glue_config))
+            }
+            CatalogConfig::Rest { .. } => {
+                // For REST catalogs, we still use Glue committer for now
+                // In future, we'd implement RestCommitter
+                anyhow::bail!("REST catalog commit not yet implemented - use Glue catalog")
+            }
+        }
+    }
+
+    /// Create from an existing iceberg-rust Table with Glue config.
+    pub fn from_table_with_glue(
+        table: Table,
+        warehouse: String,
+        region: Option<String>,
+    ) -> Result<Self> {
+        let location = table.metadata().location();
+        let s3_bucket = Self::extract_bucket(location)?;
+
+        let glue_config = GlueConfig { warehouse, region };
+        let committer = GlueCommitter::new(glue_config);
+
+        Ok(Self {
             table,
             manifest_parallelism: DEFAULT_MANIFEST_PARALLELISM,
-        }
+            committer,
+            s3_bucket,
+            file_info_cache: std::sync::RwLock::new(HashMap::new()),
+        })
     }
 
     /// Set the number of manifests to read in parallel.
@@ -348,6 +417,14 @@ impl TableSource for IcebergTable {
     async fn discover(&self) -> Result<PartitionFileMap> {
         let all_entries = self.discover_files().await?;
 
+        // Cache file info for later use in commit (to get size/record_count for removed files)
+        {
+            let mut cache = self.file_info_cache.write().unwrap();
+            for (_, file) in &all_entries {
+                cache.insert(file.path.clone(), file.clone());
+            }
+        }
+
         // Group by partition key
         let mut map = PartitionFileMap::new();
         for (partition_key, file) in all_entries {
@@ -376,22 +453,57 @@ impl TableSink for IcebergTable {
         added_files: Vec<OutputFileInfo>,
         removed_files: Vec<String>,
     ) -> Result<CommitResult> {
-        // TODO: Implement actual Iceberg commit using iceberg-rust
-        // This will involve:
-        // 1. Creating a new manifest with added_files
-        // 2. Marking removed_files as deleted
-        // 3. Creating a new snapshot
-        // 4. Committing to the catalog
-        warn!(
-            added = added_files.len(),
-            removed = removed_files.len(),
-            "Iceberg commit not yet implemented - files written but not committed to catalog"
-        );
+        // Convert OutputFileInfo to DataFileInfo for added files
+        let added: Vec<DataFileInfo> = added_files
+            .iter()
+            .map(|f| DataFileInfo {
+                path: f.path.clone(),
+                size_bytes: f.size_bytes,
+                record_count: f.record_count,
+                partition_values: None,
+            })
+            .collect();
+
+        // Convert removed file paths to DataFileInfo using cached info
+        let removed: Vec<DataFileInfo> = {
+            let cache = self.file_info_cache.read().unwrap();
+            removed_files
+                .iter()
+                .map(|path| {
+                    if let Some(info) = cache.get(path) {
+                        DataFileInfo {
+                            path: path.clone(),
+                            size_bytes: info.size_bytes,
+                            record_count: info.record_count,
+                            partition_values: None,
+                        }
+                    } else {
+                        // Fallback: use zeros if not in cache (shouldn't happen normally)
+                        debug!(path, "File info not in cache, using zeros");
+                        DataFileInfo {
+                            path: path.clone(),
+                            size_bytes: 0,
+                            record_count: 0,
+                            partition_values: None,
+                        }
+                    }
+                })
+                .collect()
+        };
+
+        let files_added = added.len();
+        let files_removed = removed.len();
+
+        // Delegate to GlueCommitter
+        let snapshot_id = self
+            .committer
+            .commit_with_table(&self.table, added, removed, &self.s3_bucket)
+            .await?;
 
         Ok(CommitResult {
-            snapshot_id: None,
-            files_added: added_files.len(),
-            files_removed: removed_files.len(),
+            snapshot_id: Some(snapshot_id),
+            files_added,
+            files_removed,
         })
     }
 }

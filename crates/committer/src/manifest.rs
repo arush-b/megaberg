@@ -133,14 +133,14 @@ pub async fn write_delete_manifest(
     Ok(manifest_file)
 }
 
-/// Write manifest list with new manifest + existing manifests.
+/// Write manifest list with new manifests + existing manifests.
 pub async fn write_manifest_list(
     file_io: &FileIO,
     ctx: &CommitContext,
-    new_manifest: ManifestFile,
+    new_manifests: Vec<ManifestFile>,
     existing_manifests: Vec<ManifestFile>,
 ) -> Result<()> {
-    let mut all_manifests = vec![new_manifest];
+    let mut all_manifests = new_manifests;
     all_manifests.extend(existing_manifests);
 
     let output = file_io

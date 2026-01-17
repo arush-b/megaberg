@@ -10,7 +10,7 @@ use iceberg_catalog_glue::GlueCatalogBuilder;
 use iceberg::spec::{SnapshotReference, SnapshotRetention, MAIN_BRANCH};
 use iceberg::TableUpdate;
 
-use crate::manifest::{write_manifest, write_manifest_list};
+use crate::manifest::{write_delete_manifest, write_manifest, write_manifest_list};
 use crate::snapshot::{build_snapshot, build_summary};
 use crate::types::{CommitContext, DataFileInfo};
 
@@ -104,7 +104,7 @@ impl GlueCommitter {
         .await?;
 
         // Write manifest list
-        write_manifest_list(file_io, &ctx, new_manifest, existing_manifests).await?;
+        write_manifest_list(file_io, &ctx, vec![new_manifest], existing_manifests).await?;
 
         // Build snapshot
         let summary_props = build_summary(&added_files);
@@ -145,6 +145,127 @@ impl GlueCommitter {
 
         // Update Glue table
         self.update_glue_table(&table, &metadata_path).await?;
+
+        tracing::info!(snapshot_id = ctx.new_snapshot_id, "Commit complete");
+        Ok(ctx.new_snapshot_id)
+    }
+
+    /// Commit with an already-loaded Table reference.
+    /// This avoids reloading the table when the caller already has it.
+    /// Handles both added files and removed files (compaction scenario).
+    pub async fn commit_with_table(
+        &self,
+        table: &Table,
+        added_files: Vec<DataFileInfo>,
+        removed_files: Vec<DataFileInfo>,
+        s3_bucket: &str,
+    ) -> Result<i64> {
+        if added_files.is_empty() && removed_files.is_empty() {
+            tracing::info!("No files to commit, skipping");
+            return Ok(0);
+        }
+
+        tracing::info!(
+            added = added_files.len(),
+            removed = removed_files.len(),
+            "Committing to Glue"
+        );
+
+        let metadata = table.metadata();
+
+        // Create commit context
+        let current_snapshot = metadata.current_snapshot();
+        let parent_snapshot_id = current_snapshot.map(|s| s.snapshot_id());
+        let current_seq = current_snapshot.map(|s| s.sequence_number()).unwrap_or(0);
+        let ctx = CommitContext::new(metadata.location(), parent_snapshot_id, current_seq);
+
+        let file_io = table.file_io();
+
+        // Get existing manifests from current snapshot
+        let existing_manifests = if let Some(snapshot) = current_snapshot {
+            let manifest_list = snapshot
+                .load_manifest_list(file_io, metadata)
+                .await
+                .context("Failed to load manifest list")?;
+            manifest_list.entries().to_vec()
+        } else {
+            Vec::new()
+        };
+
+        let mut new_manifests = Vec::new();
+
+        // Write manifest for added files
+        if !added_files.is_empty() {
+            let add_manifest = write_manifest(
+                file_io,
+                &ctx,
+                metadata.current_schema().clone(),
+                metadata.default_partition_spec().clone(),
+                metadata.default_partition_spec_id(),
+                &added_files,
+                s3_bucket,
+            )
+            .await?;
+            new_manifests.push(add_manifest);
+        }
+
+        // Write manifest for deleted files (marks original files as DELETED)
+        if !removed_files.is_empty() {
+            let delete_manifest = write_delete_manifest(
+                file_io,
+                &ctx,
+                metadata.current_schema().clone(),
+                metadata.default_partition_spec().clone(),
+                metadata.default_partition_spec_id(),
+                &removed_files,
+                s3_bucket,
+            )
+            .await?;
+            new_manifests.push(delete_manifest);
+        }
+
+        // Write manifest list with all new manifests + existing
+        write_manifest_list(file_io, &ctx, new_manifests, existing_manifests).await?;
+
+        // Build snapshot summary
+        let summary_props = build_summary(&added_files);
+        let snapshot = build_snapshot(&ctx, metadata.current_schema().schema_id(), summary_props);
+
+        // Build table updates
+        let updates = vec![
+            TableUpdate::AddSnapshot { snapshot },
+            TableUpdate::SetSnapshotRef {
+                ref_name: MAIN_BRANCH.to_string(),
+                reference: SnapshotReference::new(
+                    ctx.new_snapshot_id,
+                    SnapshotRetention::branch(None, None, None),
+                ),
+            },
+        ];
+
+        // Apply updates to build new metadata
+        let mut builder = metadata.clone().into_builder(None);
+        for update in &updates {
+            builder = update.clone().apply(builder).context("Failed to apply update")?;
+        }
+        let new_metadata = builder.build().context("Failed to build metadata")?.metadata;
+
+        // Write metadata.json
+        let metadata_path = format!(
+            "{}/metadata/{:05}-{}.metadata.json",
+            metadata.location(),
+            ctx.new_sequence_number,
+            ctx.commit_uuid
+        );
+        new_metadata
+            .write_to(file_io, &metadata_path)
+            .await
+            .context("Failed to write metadata")?;
+
+        tracing::debug!(path = %metadata_path, "Wrote metadata");
+
+        // Update Glue table
+        self.update_glue_table(table, &metadata_path).await?;
 
         tracing::info!(snapshot_id = ctx.new_snapshot_id, "Commit complete");
         Ok(ctx.new_snapshot_id)

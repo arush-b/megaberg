@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 # Internal
 common = { path = "../common" }
+committer = { path = "../committer" }
 
 # Async runtime
 tokio.workspace = true
