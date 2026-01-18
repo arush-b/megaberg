@@ -10,12 +10,14 @@ pub enum TableProvider {
     Iceberg,
 }
 
-/// Information about a data file to be added.
+/// Information about a data file to be added or deleted.
 pub struct DataFileInfo {
     pub path: String,
     pub size_bytes: u64,
     pub record_count: u64,
     pub partition_values: Option<HashMap<String, String>>,
+    /// Sequence number when file was added (required for delete entries)
+    pub sequence_number: Option<i64>,
 }
 
 /// Request to commit files to a table.

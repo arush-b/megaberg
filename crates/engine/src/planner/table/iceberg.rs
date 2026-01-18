@@ -332,6 +332,7 @@ impl IcebergTable {
                     path: data_file.file_path().to_string(),
                     size_bytes: data_file.file_size_in_bytes(),
                     record_count: data_file.record_count(),
+                    sequence_number: entry.sequence_number(),
                 },
             ));
         }
@@ -461,6 +462,7 @@ impl TableSink for IcebergTable {
                 size_bytes: f.size_bytes,
                 record_count: f.record_count,
                 partition_values: None,
+                sequence_number: None, // New files get sequence from snapshot
             })
             .collect();
 
@@ -476,6 +478,7 @@ impl TableSink for IcebergTable {
                             size_bytes: info.size_bytes,
                             record_count: info.record_count,
                             partition_values: None,
+                            sequence_number: info.sequence_number,
                         }
                     } else {
                         // Fallback: use zeros if not in cache (shouldn't happen normally)
@@ -485,6 +488,7 @@ impl TableSink for IcebergTable {
                             size_bytes: 0,
                             record_count: 0,
                             partition_values: None,
+                            sequence_number: None,
                         }
                     }
                 })

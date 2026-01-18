@@ -6,11 +6,23 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use iceberg::io::FileIO;
 use iceberg::spec::{
-    DataContentType, DataFileBuilder, DataFileFormat, ManifestFile,
+    DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestFile,
     ManifestListWriter, ManifestWriterBuilder, PartitionSpec, Schema, Struct,
 };
 
 use crate::types::{CommitContext, DataFileInfo};
+
+/// Build a partition struct with null values matching the partition spec.
+/// iceberg-rs requires the partition struct to have the same number of fields
+/// as the partition spec, even if we don't know the actual values.
+fn build_null_partition(partition_spec: &PartitionSpec) -> Struct {
+    let num_fields = partition_spec.fields().len();
+    if num_fields == 0 {
+        return Struct::empty();
+    }
+    let null_values: Vec<Option<Literal>> = vec![None; num_fields];
+    Struct::from_iter(null_values)
+}
 
 /// Write a new manifest with added files.
 pub async fn write_manifest(
@@ -48,7 +60,7 @@ pub async fn write_manifest(
             .file_format(DataFileFormat::Parquet)
             .file_size_in_bytes(file.size_bytes)
             .record_count(file.record_count)
-            .partition(Struct::empty())
+            .partition(build_null_partition(&partition_spec))
             .partition_spec_id(partition_spec_id)
             .build()
             .context("Failed to build DataFile")?;
@@ -111,16 +123,17 @@ pub async fn write_delete_manifest(
             .file_format(DataFileFormat::Parquet)
             .file_size_in_bytes(file.size_bytes)
             .record_count(file.record_count)
-            .partition(Struct::empty())
+            .partition(build_null_partition(&partition_spec))
             .partition_spec_id(partition_spec_id)
             .build()
             .context("Failed to build DataFile for deletion")?;
 
         // Use add_delete_file to mark the file as DELETED
-        // sequence_number: the original sequence when file was added (we use current for now)
-        // file_sequence_number: None since we don't track the original
+        // sequence_number: the original sequence when file was added
+        // file_sequence_number: same as sequence_number for data files
+        let seq_num = file.sequence_number.unwrap_or(1);
         writer
-            .add_delete_file(data_file, ctx.new_sequence_number, None)
+            .add_delete_file(data_file, seq_num, Some(seq_num))
             .context("Failed to add delete entry to manifest")?;
     }
 

@@ -514,6 +514,7 @@ impl ParquetSource {
                     path: format!("s3://{}/{}", self.bucket, path),
                     size_bytes: size,
                     record_count: 0, // Unknown without reading footer
+                    sequence_number: None, // Parquet sources don't have sequence numbers
                 });
             }
         }

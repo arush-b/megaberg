@@ -13,6 +13,8 @@ pub struct FileInfo {
     pub path: String,
     pub size_bytes: u64,
     pub record_count: u64,
+    /// Sequence number when file was added (for Iceberg delete tracking)
+    pub sequence_number: Option<i64>,
 }
 
 /// Map of partition key to files in that partition

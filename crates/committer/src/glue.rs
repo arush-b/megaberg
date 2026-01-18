@@ -224,8 +224,26 @@ impl GlueCommitter {
             new_manifests.push(delete_manifest);
         }
 
-        // Write manifest list with all new manifests + existing
-        write_manifest_list(file_io, &ctx, new_manifests, existing_manifests).await?;
+        // Per Iceberg spec: when files are deleted, we write a new manifest with DELETED
+        // entries. The old manifest is NOT carried forward to the new snapshot's manifest
+        // list - it remains accessible via the old snapshot for time travel.
+        //
+        // From the spec: "Snapshot-2 deletes data-1. The manifest is written as a new file,
+        // manifest-2, with data-1's status changed to DELETED. The new manifest-list is:
+        // [manifest-2]" - NOT [manifest-1, manifest-2].
+        //
+        // For compaction where we're deleting all files from old manifests, we don't carry
+        // forward any existing manifests. If we had partial deletes, we'd need to rewrite
+        // affected manifests with EXISTING entries for kept files.
+        let filtered_existing = if !removed_files.is_empty() {
+            // Don't carry forward old manifests - the delete manifest has DELETED entries
+            Vec::new()
+        } else {
+            existing_manifests
+        };
+
+        // Write manifest list with new manifests only (for compaction)
+        write_manifest_list(file_io, &ctx, new_manifests, filtered_existing).await?;
 
         // Build snapshot summary
         let summary_props = build_summary(&added_files);
