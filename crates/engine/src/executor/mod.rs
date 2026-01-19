@@ -1,12 +1,10 @@
 mod config;
 mod engine;
-mod lightweight_engine;
 mod metrics;
 mod writer;
 
 pub use config::{CompactionConfig, ExecutorConfig, S3Config, StorageError};
 pub use engine::{CompactionEngine, CompactionError};
-pub use lightweight_engine::{LightweightCompactionEngine, LightweightCompactionError, LightweightConfig};
 pub use metrics::{ExecutorMetrics, MetricsSnapshot};
 pub use writer::{
     add_field_ids_to_schema, ColumnStats, RollingParquetWriter, WrittenFile, PARQUET_FIELD_ID_META_KEY,
