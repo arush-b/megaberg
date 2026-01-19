@@ -3,6 +3,9 @@
 //! Two layers:
 //! - `ConfigFile`: JSON-deserializable structure (what the user writes)
 //! - `AppConfig`: Validated, ready-to-use config (what the code uses)
+//!
+//! Key design: `TableLocation` is shared between source and sink,
+//! while `SourceConfig` adds discovery-specific options like `time_window`.
 
 use std::collections::HashMap;
 
@@ -25,36 +28,30 @@ use serde::Deserialize;
 pub struct AppConfig {
     pub s3: S3Config,
     pub source: SourceConfig,
-    pub sink: SinkConfig,
+    pub sink: TableLocation,
     pub compaction: CompactionConfig,
 }
 
-/// Source configuration (fully resolved).
-#[derive(Debug, Clone)]
-pub enum SourceConfig {
+/// Where a table is located (shared by source and sink).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TableLocation {
+    /// Iceberg table in a catalog.
     Iceberg {
         catalog: CatalogConfig,
         namespace: String,
         table: String,
     },
-    Parquet {
-        base_path: String,
-        bucket: String,
-        time_window: Option<TimeWindowConfig>,
-    },
+    /// Parquet files in S3.
+    Parquet { path: String, bucket: String },
 }
 
-/// Sink configuration (fully resolved).
+/// Source configuration = location + discovery options.
 #[derive(Debug, Clone)]
-pub enum SinkConfig {
-    /// Commit to Iceberg catalog.
-    Iceberg {
-        catalog: CatalogConfig,
-        namespace: String,
-        table: String,
-    },
-    /// Write Parquet files (no catalog commit).
-    Parquet { output_path: String },
+pub struct SourceConfig {
+    /// Where to read from.
+    pub location: TableLocation,
+    /// Optional time-windowed discovery (for incremental compaction).
+    pub time_window: Option<TimeWindowConfig>,
 }
 
 impl AppConfig {
@@ -101,8 +98,9 @@ impl Default for CompactionConfig {
 pub struct ConfigFile {
     pub s3: S3ConfigFile,
     pub source: SourceConfigFile,
+    /// Optional sink - defaults to source location if not specified.
     #[serde(default)]
-    pub sink: Option<SinkConfigFile>,
+    pub sink: Option<TableLocationFile>,
     #[serde(default)]
     pub compaction: Option<CompactionConfig>,
 }
@@ -138,7 +136,7 @@ impl From<S3ConfigFile> for S3Config {
     }
 }
 
-/// Source configuration from JSON.
+/// Source configuration from JSON (location + discovery options).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum SourceConfigFile {
@@ -154,21 +152,17 @@ pub enum SourceConfigFile {
     },
 }
 
-/// Sink configuration from JSON.
+/// Table location from JSON (for explicit sink specification).
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum SinkConfigFile {
+pub enum TableLocationFile {
     Iceberg {
-        #[serde(default)]
-        catalog: Option<CatalogConfigFile>,
-        #[serde(default)]
-        namespace: Option<String>,
-        #[serde(default)]
-        table: Option<String>,
+        catalog: CatalogConfigFile,
+        namespace: String,
+        table: String,
     },
     Parquet {
-        #[serde(default)]
-        output_path: Option<String>,
+        path: String,
     },
 }
 
@@ -213,7 +207,7 @@ impl From<CatalogConfigFile> for CatalogConfig {
 }
 
 // ============================================================================
-// Time Window Config (for Parquet source)
+// Time Window Config (for partition discovery)
 // ============================================================================
 
 /// Time window configuration from JSON.
@@ -349,35 +343,71 @@ impl TimeWindowConfigFile {
 // ConfigFile -> AppConfig conversion
 // ============================================================================
 
-impl ConfigFile {
-    /// Validate and convert to AppConfig.
-    pub fn into_app_config(self) -> Result<AppConfig> {
-        let s3: S3Config = self.s3.into();
-        let bucket = s3.bucket.clone();
-
-        // Convert source
-        let source = match self.source {
+impl SourceConfigFile {
+    /// Convert to SourceConfig, resolving bucket from S3 config.
+    fn into_source_config(self, bucket: &str) -> SourceConfig {
+        match self {
             SourceConfigFile::Iceberg {
                 catalog,
                 namespace,
                 table,
-            } => SourceConfig::Iceberg {
-                catalog: catalog.into(),
-                namespace,
-                table,
+            } => SourceConfig {
+                location: TableLocation::Iceberg {
+                    catalog: catalog.into(),
+                    namespace,
+                    table,
+                },
+                time_window: None,
             },
             SourceConfigFile::Parquet {
                 base_path,
                 time_window,
-            } => SourceConfig::Parquet {
-                base_path,
-                bucket: bucket.clone(),
+            } => SourceConfig {
+                location: TableLocation::Parquet {
+                    path: base_path,
+                    bucket: bucket.to_string(),
+                },
                 time_window: time_window.map(|tw| tw.into_time_window_config()),
             },
-        };
+        }
+    }
+}
 
-        // Resolve sink (defaults to source if not specified)
-        let sink = resolve_sink(self.sink, &source)?;
+impl TableLocationFile {
+    /// Convert to TableLocation, resolving bucket from S3 config.
+    fn into_table_location(self, bucket: &str) -> TableLocation {
+        match self {
+            TableLocationFile::Iceberg {
+                catalog,
+                namespace,
+                table,
+            } => TableLocation::Iceberg {
+                catalog: catalog.into(),
+                namespace,
+                table,
+            },
+            TableLocationFile::Parquet { path } => TableLocation::Parquet {
+                path,
+                bucket: bucket.to_string(),
+            },
+        }
+    }
+}
+
+impl ConfigFile {
+    /// Validate and convert to AppConfig.
+    pub fn into_app_config(self) -> Result<AppConfig> {
+        let s3: S3Config = self.s3.into();
+        let bucket = &s3.bucket;
+
+        // Convert source (location + discovery options)
+        let source = self.source.into_source_config(bucket);
+
+        // Sink defaults to source location (the elegant one-liner!)
+        let sink = self
+            .sink
+            .map(|s| s.into_table_location(bucket))
+            .unwrap_or_else(|| source.location.clone());
 
         let compaction = self.compaction.unwrap_or_default();
 
@@ -390,73 +420,673 @@ impl ConfigFile {
     }
 }
 
-/// Resolve sink configuration, inheriting from source if needed.
-fn resolve_sink(sink: Option<SinkConfigFile>, source: &SourceConfig) -> Result<SinkConfig> {
-    match sink {
-        // No sink specified - derive from source
-        None => match source {
-            SourceConfig::Iceberg {
-                catalog,
-                namespace,
-                table,
-            } => Ok(SinkConfig::Iceberg {
-                catalog: catalog.clone(),
-                namespace: namespace.clone(),
-                table: table.clone(),
-            }),
-            SourceConfig::Parquet { base_path, .. } => Ok(SinkConfig::Parquet {
-                output_path: base_path.clone(),
-            }),
-        },
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        // Iceberg sink - may inherit from source
-        Some(SinkConfigFile::Iceberg {
-            catalog,
-            namespace,
-            table,
-        }) => {
-            // Try to inherit from Iceberg source if fields are missing
-            let (default_catalog, default_namespace, default_table) = match source {
-                SourceConfig::Iceberg {
-                    catalog,
-                    namespace,
-                    table,
-                } => (Some(catalog), Some(namespace), Some(table)),
-                _ => (None, None, None),
-            };
+    /// Helper to create a minimal S3 config for tests
+    fn test_s3_config() -> S3ConfigFile {
+        S3ConfigFile {
+            endpoint: "http://localhost:9000".to_string(),
+            access_key: Some("admin".to_string()),
+            secret_key: Some("password".to_string()),
+            bucket: "test-bucket".to_string(),
+            region: "us-east-1".to_string(),
+            use_default_credentials: false,
+        }
+    }
 
-            let resolved_catalog = match catalog {
-                Some(c) => c.into(),
-                None => default_catalog
-                    .cloned()
-                    .context("Iceberg sink requires catalog (source is not Iceberg)")?,
-            };
+    // ========================================================================
+    // Parquet source tests
+    // ========================================================================
 
-            let resolved_namespace = namespace
-                .or_else(|| default_namespace.cloned())
-                .context("Iceberg sink requires namespace")?;
+    #[test]
+    fn test_parquet_source_sink_defaults_to_source() {
+        // When no sink specified, sink should default to source location
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/events/"
+            }
+        }"#;
 
-            let resolved_table = table
-                .or_else(|| default_table.cloned())
-                .context("Iceberg sink requires table")?;
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
 
-            Ok(SinkConfig::Iceberg {
-                catalog: resolved_catalog,
-                namespace: resolved_namespace,
-                table: resolved_table,
-            })
+        // Source should be Parquet
+        assert!(matches!(app_config.source.location, TableLocation::Parquet { .. }));
+
+        // Sink should equal source location
+        assert_eq!(app_config.source.location, app_config.sink);
+
+        // Verify path and bucket
+        if let TableLocation::Parquet { path, bucket } = &app_config.sink {
+            assert_eq!(path, "data/events/");
+            assert_eq!(bucket, "test-bucket");
+        } else {
+            panic!("Expected Parquet sink");
+        }
+    }
+
+    #[test]
+    fn test_parquet_source_with_explicit_parquet_sink() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/raw/"
+            },
+            "sink": {
+                "type": "parquet",
+                "path": "data/compacted/"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        // Source and sink should be different
+        assert_ne!(app_config.source.location, app_config.sink);
+
+        // Verify source
+        if let TableLocation::Parquet { path, .. } = &app_config.source.location {
+            assert_eq!(path, "data/raw/");
+        } else {
+            panic!("Expected Parquet source");
         }
 
-        // Parquet sink
-        Some(SinkConfigFile::Parquet { output_path }) => {
-            let path = output_path.unwrap_or_else(|| {
-                // Default to source base_path for parquet
-                match source {
-                    SourceConfig::Parquet { base_path, .. } => base_path.clone(),
-                    _ => "output/".to_string(),
+        // Verify sink
+        if let TableLocation::Parquet { path, bucket } = &app_config.sink {
+            assert_eq!(path, "data/compacted/");
+            assert_eq!(bucket, "test-bucket"); // Should inherit bucket from S3 config
+        } else {
+            panic!("Expected Parquet sink");
+        }
+    }
+
+    #[test]
+    fn test_parquet_source_with_iceberg_sink() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/raw/"
+            },
+            "sink": {
+                "type": "iceberg",
+                "catalog": {
+                    "type": "glue",
+                    "warehouse": "s3://test-bucket/warehouse"
+                },
+                "namespace": "analytics",
+                "table": "events"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        // Source should be Parquet
+        assert!(matches!(app_config.source.location, TableLocation::Parquet { .. }));
+
+        // Sink should be Iceberg
+        assert!(matches!(app_config.sink, TableLocation::Iceberg { .. }));
+
+        // Verify Iceberg sink details
+        if let TableLocation::Iceberg { catalog, namespace, table } = &app_config.sink {
+            assert_eq!(namespace, "analytics");
+            assert_eq!(table, "events");
+            assert!(matches!(catalog, CatalogConfig::Glue { .. }));
+        } else {
+            panic!("Expected Iceberg sink");
+        }
+    }
+
+    #[test]
+    fn test_parquet_source_with_time_window() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/events/",
+                "time_window": {
+                    "partition_spec": {
+                        "fields": [
+                            {"name": "dt", "format": "%Y-%m-%d", "component": "date"},
+                            {"name": "hour", "format": "%H", "component": "hour"}
+                        ],
+                        "granularity": "hour"
+                    },
+                    "lookback": {"type": "duration", "hours": 5},
+                    "skip_recent": 1
                 }
-            });
-            Ok(SinkConfig::Parquet { output_path: path })
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        // Verify time_window is set
+        assert!(app_config.source.time_window.is_some());
+
+        let tw = app_config.source.time_window.unwrap();
+        assert_eq!(tw.skip_recent, 1);
+        assert_eq!(tw.partition_spec.fields.len(), 2);
+        assert_eq!(tw.partition_spec.fields[0].name, "dt");
+        assert_eq!(tw.partition_spec.fields[1].name, "hour");
+        assert!(matches!(tw.partition_spec.granularity, PartitionGranularity::Hour));
+        assert!(matches!(tw.lookback, LookbackWindow::Duration { hours: 5, minutes: 0 }));
+    }
+
+    #[test]
+    fn test_parquet_source_time_window_with_partitions_lookback() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/events/",
+                "time_window": {
+                    "partition_spec": {
+                        "fields": [
+                            {"name": "dt", "format": "%Y-%m-%d", "component": "date"}
+                        ],
+                        "granularity": "day"
+                    },
+                    "lookback": {"type": "partitions", "count": 7},
+                    "skip_recent": 2
+                }
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        let tw = app_config.source.time_window.unwrap();
+        assert_eq!(tw.skip_recent, 2);
+        assert!(matches!(tw.partition_spec.granularity, PartitionGranularity::Day));
+        assert!(matches!(tw.lookback, LookbackWindow::Partitions { count: 7 }));
+    }
+
+    // ========================================================================
+    // Iceberg source tests
+    // ========================================================================
+
+    #[test]
+    fn test_iceberg_source_sink_defaults_to_source() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "iceberg",
+                "catalog": {
+                    "type": "glue",
+                    "warehouse": "s3://test-bucket/warehouse"
+                },
+                "namespace": "analytics",
+                "table": "events"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        // Source and sink should be the same
+        assert_eq!(app_config.source.location, app_config.sink);
+
+        // Verify both are Iceberg with same details
+        if let TableLocation::Iceberg { namespace, table, .. } = &app_config.source.location {
+            assert_eq!(namespace, "analytics");
+            assert_eq!(table, "events");
+        } else {
+            panic!("Expected Iceberg source");
         }
+    }
+
+    #[test]
+    fn test_iceberg_source_with_different_iceberg_sink() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "iceberg",
+                "catalog": {
+                    "type": "glue",
+                    "warehouse": "s3://test-bucket/warehouse"
+                },
+                "namespace": "raw",
+                "table": "events_raw"
+            },
+            "sink": {
+                "type": "iceberg",
+                "catalog": {
+                    "type": "glue",
+                    "warehouse": "s3://test-bucket/warehouse"
+                },
+                "namespace": "analytics",
+                "table": "events_compacted"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        // Source and sink should be different
+        assert_ne!(app_config.source.location, app_config.sink);
+
+        // Verify source
+        if let TableLocation::Iceberg { namespace, table, .. } = &app_config.source.location {
+            assert_eq!(namespace, "raw");
+            assert_eq!(table, "events_raw");
+        } else {
+            panic!("Expected Iceberg source");
+        }
+
+        // Verify sink
+        if let TableLocation::Iceberg { namespace, table, .. } = &app_config.sink {
+            assert_eq!(namespace, "analytics");
+            assert_eq!(table, "events_compacted");
+        } else {
+            panic!("Expected Iceberg sink");
+        }
+    }
+
+    #[test]
+    fn test_iceberg_source_with_parquet_sink() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "iceberg",
+                "catalog": {
+                    "type": "rest",
+                    "uri": "http://localhost:8181"
+                },
+                "namespace": "default",
+                "table": "events"
+            },
+            "sink": {
+                "type": "parquet",
+                "path": "data/exported/"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        // Source should be Iceberg
+        assert!(matches!(app_config.source.location, TableLocation::Iceberg { .. }));
+
+        // Sink should be Parquet
+        assert!(matches!(app_config.sink, TableLocation::Parquet { .. }));
+
+        if let TableLocation::Parquet { path, bucket } = &app_config.sink {
+            assert_eq!(path, "data/exported/");
+            assert_eq!(bucket, "test-bucket");
+        }
+    }
+
+    // ========================================================================
+    // Catalog type tests
+    // ========================================================================
+
+    #[test]
+    fn test_rest_catalog_config() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "iceberg",
+                "catalog": {
+                    "type": "rest",
+                    "uri": "http://localhost:8181",
+                    "warehouse": "s3://lakehouse/"
+                },
+                "namespace": "default",
+                "table": "events"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        if let TableLocation::Iceberg { catalog, .. } = &app_config.source.location {
+            if let CatalogConfig::Rest { uri, warehouse, props } = catalog {
+                assert_eq!(uri, "http://localhost:8181");
+                assert_eq!(warehouse.as_deref(), Some("s3://lakehouse/"));
+                assert!(props.is_empty());
+            } else {
+                panic!("Expected REST catalog");
+            }
+        } else {
+            panic!("Expected Iceberg source");
+        }
+    }
+
+    #[test]
+    fn test_glue_catalog_config() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "iceberg",
+                "catalog": {
+                    "type": "glue",
+                    "warehouse": "s3://lakehouse/",
+                    "catalog_id": "123456789012",
+                    "region": "us-west-2"
+                },
+                "namespace": "default",
+                "table": "events"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        if let TableLocation::Iceberg { catalog, .. } = &app_config.source.location {
+            if let CatalogConfig::Glue { warehouse, catalog_id, region, props } = catalog {
+                assert_eq!(warehouse, "s3://lakehouse/");
+                assert_eq!(catalog_id.as_deref(), Some("123456789012"));
+                assert_eq!(region.as_deref(), Some("us-west-2"));
+                assert!(props.is_empty());
+            } else {
+                panic!("Expected Glue catalog");
+            }
+        } else {
+            panic!("Expected Iceberg source");
+        }
+    }
+
+    // ========================================================================
+    // Compaction config tests
+    // ========================================================================
+
+    #[test]
+    fn test_compaction_defaults() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        // Verify defaults
+        assert_eq!(app_config.compaction.target_file_size_mb, 256);
+        assert_eq!(app_config.compaction.min_files_per_partition, 2);
+    }
+
+    #[test]
+    fn test_compaction_custom_values() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/"
+            },
+            "compaction": {
+                "target_file_size_mb": 512,
+                "min_files_per_partition": 5
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        assert_eq!(app_config.compaction.target_file_size_mb, 512);
+        assert_eq!(app_config.compaction.min_files_per_partition, 5);
+    }
+
+    // ========================================================================
+    // S3 config tests
+    // ========================================================================
+
+    #[test]
+    fn test_s3_config_with_credentials() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "access_key": "mykey",
+                "secret_key": "mysecret",
+                "bucket": "test-bucket",
+                "region": "us-east-1",
+                "use_default_credentials": false
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        assert_eq!(app_config.s3.endpoint, "http://localhost:9000");
+        assert_eq!(app_config.s3.access_key, "mykey");
+        assert_eq!(app_config.s3.secret_key, "mysecret");
+        assert_eq!(app_config.s3.bucket, "test-bucket");
+        assert_eq!(app_config.s3.region, "us-east-1");
+        assert!(!app_config.s3.use_default_credentials);
+    }
+
+    #[test]
+    fn test_s3_config_defaults() {
+        // Test that use_default_credentials defaults to true
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/"
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        // Credentials should default to empty strings
+        assert_eq!(app_config.s3.access_key, "");
+        assert_eq!(app_config.s3.secret_key, "");
+        // use_default_credentials should default to true
+        assert!(app_config.s3.use_default_credentials);
+    }
+
+    // ========================================================================
+    // Time window defaults tests
+    // ========================================================================
+
+    #[test]
+    fn test_time_window_defaults() {
+        let config_json = r#"{
+            "s3": {
+                "endpoint": "http://localhost:9000",
+                "bucket": "test-bucket",
+                "region": "us-east-1"
+            },
+            "source": {
+                "type": "parquet",
+                "base_path": "data/",
+                "time_window": {
+                    "partition_spec": {
+                        "fields": [
+                            {"name": "dt", "format": "%Y-%m-%d", "component": "date"}
+                        ]
+                    },
+                    "lookback": {"type": "duration", "hours": 24}
+                }
+            }
+        }"#;
+
+        let config: ConfigFile = serde_json::from_str(config_json).unwrap();
+        let app_config = config.into_app_config().unwrap();
+
+        let tw = app_config.source.time_window.unwrap();
+
+        // skip_recent should default to 1
+        assert_eq!(tw.skip_recent, 1);
+
+        // timezone should default to UTC
+        assert_eq!(tw.partition_spec.timezone, "UTC");
+
+        // granularity should default to Hour
+        assert!(matches!(tw.partition_spec.granularity, PartitionGranularity::Hour));
+    }
+
+    // ========================================================================
+    // TableLocation equality tests (for instance sharing logic)
+    // ========================================================================
+
+    #[test]
+    fn test_table_location_equality_iceberg_same() {
+        let loc1 = TableLocation::Iceberg {
+            catalog: CatalogConfig::Glue {
+                warehouse: "s3://bucket/warehouse".to_string(),
+                catalog_id: None,
+                region: Some("us-east-1".to_string()),
+                props: HashMap::new(),
+            },
+            namespace: "default".to_string(),
+            table: "events".to_string(),
+        };
+
+        let loc2 = TableLocation::Iceberg {
+            catalog: CatalogConfig::Glue {
+                warehouse: "s3://bucket/warehouse".to_string(),
+                catalog_id: None,
+                region: Some("us-east-1".to_string()),
+                props: HashMap::new(),
+            },
+            namespace: "default".to_string(),
+            table: "events".to_string(),
+        };
+
+        assert_eq!(loc1, loc2);
+    }
+
+    #[test]
+    fn test_table_location_equality_iceberg_different_table() {
+        let loc1 = TableLocation::Iceberg {
+            catalog: CatalogConfig::Glue {
+                warehouse: "s3://bucket/warehouse".to_string(),
+                catalog_id: None,
+                region: None,
+                props: HashMap::new(),
+            },
+            namespace: "default".to_string(),
+            table: "events".to_string(),
+        };
+
+        let loc2 = TableLocation::Iceberg {
+            catalog: CatalogConfig::Glue {
+                warehouse: "s3://bucket/warehouse".to_string(),
+                catalog_id: None,
+                region: None,
+                props: HashMap::new(),
+            },
+            namespace: "default".to_string(),
+            table: "events_compacted".to_string(),
+        };
+
+        assert_ne!(loc1, loc2);
+    }
+
+    #[test]
+    fn test_table_location_equality_parquet_same() {
+        let loc1 = TableLocation::Parquet {
+            path: "data/events/".to_string(),
+            bucket: "test-bucket".to_string(),
+        };
+
+        let loc2 = TableLocation::Parquet {
+            path: "data/events/".to_string(),
+            bucket: "test-bucket".to_string(),
+        };
+
+        assert_eq!(loc1, loc2);
+    }
+
+    #[test]
+    fn test_table_location_equality_parquet_different() {
+        let loc1 = TableLocation::Parquet {
+            path: "data/raw/".to_string(),
+            bucket: "test-bucket".to_string(),
+        };
+
+        let loc2 = TableLocation::Parquet {
+            path: "data/compacted/".to_string(),
+            bucket: "test-bucket".to_string(),
+        };
+
+        assert_ne!(loc1, loc2);
+    }
+
+    #[test]
+    fn test_table_location_equality_mixed_types() {
+        let parquet = TableLocation::Parquet {
+            path: "data/events/".to_string(),
+            bucket: "test-bucket".to_string(),
+        };
+
+        let iceberg = TableLocation::Iceberg {
+            catalog: CatalogConfig::Rest {
+                uri: "http://localhost:8181".to_string(),
+                warehouse: None,
+                props: HashMap::new(),
+            },
+            namespace: "default".to_string(),
+            table: "events".to_string(),
+        };
+
+        assert_ne!(parquet, iceberg);
     }
 }

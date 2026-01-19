@@ -11,7 +11,9 @@ use anyhow::{Context, Result};
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
 use bytes::Bytes;
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc};
+use chrono::{
+    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Timelike, Utc,
+};
 use futures::TryStreamExt;
 use opendal::Operator;
 use parquet::arrow::parquet_to_arrow_schema;
@@ -268,9 +270,55 @@ impl ParquetSource {
     /// - Single-level partitioning (base_path/partition=value/)
     /// - Nested partitioning (base_path/year=2024/month=01/day=15/)
     ///
-    /// When time_window is configured, partitions are filtered to only
-    /// include those within the lookback window (excluding recent ones).
+    /// When time_window is configured, uses targeted prefix listing to
+    /// efficiently discover only partitions within the time window,
+    /// avoiding expensive recursive listing of all historical partitions.
     async fn discover_partitions(&self) -> Result<Vec<String>> {
+        // OPTIMIZATION: When time_window is configured, generate targeted prefixes
+        // instead of listing all partitions and filtering afterward.
+        if let Some(ref tw) = self.time_window {
+            let prefixes = self.generate_time_window_prefixes(tw);
+
+            if prefixes.is_empty() {
+                debug!(
+                    base = %self.base_path,
+                    "No partitions in time window (empty range)"
+                );
+                return Ok(Vec::new());
+            }
+
+            let mut partitions = Vec::new();
+            let mut checked = 0;
+            let mut found = 0;
+
+            for prefix in prefixes {
+                checked += 1;
+                match self.partition_has_parquet_files(&prefix).await {
+                    Ok(true) => {
+                        found += 1;
+                        partitions.push(prefix);
+                    }
+                    Ok(false) => {
+                        // Partition doesn't exist or has no parquet files - expected for sparse data
+                        debug!(prefix = %prefix, "Partition prefix has no parquet files, skipping");
+                    }
+                    Err(e) => {
+                        // Log but continue - partition might not exist
+                        debug!(prefix = %prefix, error = %e, "Error checking partition, skipping");
+                    }
+                }
+            }
+
+            info!(
+                base = %self.base_path,
+                checked,
+                found,
+                "Targeted partition discovery complete"
+            );
+            return Ok(partitions);
+        }
+
+        // FALLBACK: Full recursive listing when no time_window is configured
         let mut to_explore = vec![self.base_path.clone()];
         let mut partitions = Vec::new();
 
@@ -310,18 +358,10 @@ impl ParquetSource {
             to_explore.extend(subdirs);
         }
 
-        // Apply time window filter if configured
-        let partitions = if let Some(ref tw) = self.time_window {
-            self.filter_partitions_by_time(partitions, tw)?
-        } else {
-            partitions
-        };
-
         debug!(
             base = %self.base_path,
             partitions = partitions.len(),
-            time_filtered = self.time_window.is_some(),
-            "Discovered partitions"
+            "Full recursive partition discovery complete"
         );
         Ok(partitions)
     }
@@ -384,10 +424,7 @@ impl ParquetSource {
 
         info!(
             included = filtered.len(),
-            skipped_old,
-            skipped_recent,
-            parse_errors,
-            "Time window filter results"
+            skipped_old, skipped_recent, parse_errors, "Time window filter results"
         );
 
         Ok(filtered)
@@ -418,30 +455,40 @@ impl ParquetSource {
 
             match field.component {
                 TimeComponent::Date => {
-                    let date = NaiveDate::parse_from_str(value, &field.format)
-                        .with_context(|| format!("Failed to parse date '{}' with format '{}'", value, field.format))?;
+                    let date =
+                        NaiveDate::parse_from_str(value, &field.format).with_context(|| {
+                            format!(
+                                "Failed to parse date '{}' with format '{}'",
+                                value, field.format
+                            )
+                        })?;
                     year = date.year();
                     month = date.month();
                     day = date.day();
                 }
                 TimeComponent::Year => {
-                    year = value.parse()
+                    year = value
+                        .parse()
                         .with_context(|| format!("Failed to parse year '{}'", value))?;
                 }
                 TimeComponent::Month => {
-                    month = value.parse()
+                    month = value
+                        .parse()
                         .with_context(|| format!("Failed to parse month '{}'", value))?;
                 }
                 TimeComponent::Day => {
-                    day = value.parse()
+                    day = value
+                        .parse()
                         .with_context(|| format!("Failed to parse day '{}'", value))?;
                 }
                 TimeComponent::Hour => {
-                    hour = value.parse()
+                    hour = value
+                        .parse()
                         .with_context(|| format!("Failed to parse hour '{}'", value))?;
                 }
                 TimeComponent::Minute => {
-                    minute = value.parse()
+                    minute = value
+                        .parse()
                         .with_context(|| format!("Failed to parse minute '{}'", value))?;
                 }
             }
@@ -457,6 +504,91 @@ impl ParquetSource {
         // Convert to UTC (assuming partition times are in UTC for now)
         // TODO: Support configurable timezone via spec.timezone
         Ok(Utc.from_utc_datetime(&naive))
+    }
+
+    /// Generate targeted partition prefixes for a time window.
+    ///
+    /// Instead of listing all partitions and filtering, this generates the
+    /// exact prefixes that should exist within the time window. This is
+    /// much more efficient for tables with many historical partitions.
+    ///
+    /// Returns full paths (base_path + partition path + trailing slash).
+    fn generate_time_window_prefixes(&self, config: &TimeWindowConfig) -> Vec<String> {
+        let now = Utc::now();
+        let granularity = config.partition_spec.granularity;
+
+        // Calculate time boundaries (same logic as filter_partitions_by_time)
+        let lookback_duration = config.lookback.to_duration(granularity);
+        let cutoff = now - lookback_duration;
+
+        // Skip recent partitions
+        let current_boundary = granularity.truncate(now);
+        let skip_duration = granularity.duration() * (config.skip_recent as i32);
+        let skip_after = current_boundary - skip_duration;
+
+        info!(
+            cutoff = %cutoff.format("%Y-%m-%d %H:%M"),
+            skip_after = %skip_after.format("%Y-%m-%d %H:%M"),
+            granularity = ?granularity,
+            "Generating targeted prefixes for time window"
+        );
+
+        // Handle edge case: empty time window (skip_after <= cutoff)
+        if skip_after <= cutoff {
+            debug!("Empty time window: skip_after <= cutoff, no prefixes to generate");
+            return Vec::new();
+        }
+
+        // Iterate from first valid partition to last valid partition
+        let mut prefixes = Vec::new();
+        let mut current = granularity.truncate(cutoff);
+
+        // Move to first complete partition after cutoff
+        // (if cutoff is not on a boundary, the partition containing it might be too old)
+        if current < cutoff {
+            current = current + granularity.duration();
+        }
+
+        while current < skip_after {
+            let partition_key = Self::format_partition_prefix(current, &config.partition_spec);
+            let full_path = format!("{}{}/", self.base_path, partition_key);
+            prefixes.push(full_path);
+
+            current = current + granularity.duration();
+        }
+
+        debug!(
+            prefix_count = prefixes.len(),
+            first = prefixes.first().map(|s| s.as_str()),
+            last = prefixes.last().map(|s| s.as_str()),
+            "Generated partition prefixes"
+        );
+
+        prefixes
+    }
+
+    /// Format a timestamp as a partition path prefix.
+    ///
+    /// This is the inverse of `parse_partition_time` - given a timestamp,
+    /// it generates the partition path string based on the field definitions.
+    ///
+    /// E.g., 2024-01-15 14:00:00 UTC with dt/hour fields -> "dt=2024-01-15/hour=14"
+    fn format_partition_prefix(ts: DateTime<Utc>, spec: &PartitionTimeSpec) -> String {
+        let mut parts = Vec::with_capacity(spec.fields.len());
+
+        for field in &spec.fields {
+            let value = match field.component {
+                TimeComponent::Date => ts.format(&field.format).to_string(),
+                TimeComponent::Year => ts.format(&field.format).to_string(),
+                TimeComponent::Month => ts.format(&field.format).to_string(),
+                TimeComponent::Day => ts.format(&field.format).to_string(),
+                TimeComponent::Hour => ts.format(&field.format).to_string(),
+                TimeComponent::Minute => ts.format(&field.format).to_string(),
+            };
+            parts.push(format!("{}={}", field.name, value));
+        }
+
+        parts.join("/")
     }
 
     /// Extract key=value pairs from a partition path.
@@ -513,7 +645,7 @@ impl ParquetSource {
                 files.push(FileInfo {
                     path: format!("s3://{}/{}", self.bucket, path),
                     size_bytes: size,
-                    record_count: 0, // Unknown without reading footer
+                    record_count: 0,       // Unknown without reading footer
                     sequence_number: None, // Parquet sources don't have sequence numbers
                 });
             }
@@ -521,6 +653,35 @@ impl ParquetSource {
 
         debug!(partition = %partition_path, files = files.len(), "Listed files in partition");
         Ok(files)
+    }
+
+    /// Check if a partition path exists and contains parquet files.
+    ///
+    /// This is a lightweight check used during targeted prefix discovery
+    /// to verify that a generated prefix actually exists in S3.
+    /// Non-existent prefixes are silently skipped (expected for sparse data).
+    async fn partition_has_parquet_files(&self, partition_path: &str) -> Result<bool> {
+        // Try to list just one file to check if the partition exists
+        let entries: Vec<_> = self
+            .operator
+            .lister_with(partition_path)
+            .recursive(false)
+            .await
+            .with_context(|| format!("Failed to list partition: {}", partition_path))?
+            .try_collect()
+            .await?;
+
+        // Check if any entry is a parquet file
+        for entry in entries {
+            let path = entry.path();
+            let metadata = entry.metadata();
+
+            if !metadata.is_dir() && path.ends_with(".parquet") {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     /// Extract partition key from full path.
@@ -654,7 +815,9 @@ impl TableSource for ParquetSource {
             }
         }
 
-        Err(anyhow::anyhow!("No parquet files found to read schema from"))
+        Err(anyhow::anyhow!(
+            "No parquet files found to read schema from"
+        ))
     }
 
     async fn discover(&self) -> Result<PartitionFileMap> {
@@ -756,7 +919,11 @@ mod tests {
         // Create a dummy operator - we won't actually use it in unit tests
         let builder = opendal::services::Memory::default();
         let operator = opendal::Operator::new(builder).unwrap().finish();
-        ParquetSource::new(operator, "data/events/".to_string(), "test-bucket".to_string())
+        ParquetSource::new(
+            operator,
+            "data/events/".to_string(),
+            "test-bucket".to_string(),
+        )
     }
 
     fn create_time_window_config() -> TimeWindowConfig {
@@ -777,7 +944,10 @@ mod tests {
                 timezone: "UTC".to_string(),
                 granularity: PartitionGranularity::Hour,
             },
-            lookback: LookbackWindow::Duration { hours: 3, minutes: 0 },
+            lookback: LookbackWindow::Duration {
+                hours: 3,
+                minutes: 0,
+            },
             skip_recent: 1,
         }
     }
@@ -802,7 +972,9 @@ mod tests {
             granularity: PartitionGranularity::Hour,
         };
 
-        let ts = source.parse_partition_time("dt=2024-01-15/hour=14", &spec).unwrap();
+        let ts = source
+            .parse_partition_time("dt=2024-01-15/hour=14", &spec)
+            .unwrap();
         assert_eq!(ts, Utc.with_ymd_and_hms(2024, 1, 15, 14, 0, 0).unwrap());
     }
 
@@ -836,7 +1008,9 @@ mod tests {
             granularity: PartitionGranularity::Hour,
         };
 
-        let ts = source.parse_partition_time("year=2024/month=01/day=15/hour=14", &spec).unwrap();
+        let ts = source
+            .parse_partition_time("year=2024/month=01/day=15/hour=14", &spec)
+            .unwrap();
         assert_eq!(ts, Utc.with_ymd_and_hms(2024, 1, 15, 14, 0, 0).unwrap());
     }
 
@@ -902,7 +1076,10 @@ mod tests {
                 timezone: "UTC".to_string(),
                 granularity: PartitionGranularity::Hour,
             },
-            lookback: LookbackWindow::Duration { hours: 2, minutes: 0 },
+            lookback: LookbackWindow::Duration {
+                hours: 2,
+                minutes: 0,
+            },
             skip_recent: 1,
         };
 
@@ -913,8 +1090,13 @@ mod tests {
             "data/events/dt=2020-01-15/hour=12/".to_string(),
         ];
 
-        let result = source.filter_partitions_by_time(old_partitions, &config).unwrap();
-        assert!(result.is_empty(), "Old partitions from 2020 should all be filtered out");
+        let result = source
+            .filter_partitions_by_time(old_partitions, &config)
+            .unwrap();
+        assert!(
+            result.is_empty(),
+            "Old partitions from 2020 should all be filtered out"
+        );
     }
 
     #[test]
@@ -938,7 +1120,10 @@ mod tests {
                 timezone: "UTC".to_string(),
                 granularity: PartitionGranularity::Hour,
             },
-            lookback: LookbackWindow::Duration { hours: 2, minutes: 0 },
+            lookback: LookbackWindow::Duration {
+                hours: 2,
+                minutes: 0,
+            },
             skip_recent: 1,
         };
 
@@ -948,13 +1133,21 @@ mod tests {
             "data/events/dt=2030-01-15/hour=11/".to_string(),
         ];
 
-        let result = source.filter_partitions_by_time(future_partitions, &config).unwrap();
-        assert!(result.is_empty(), "Future partitions from 2030 should all be filtered out as too recent");
+        let result = source
+            .filter_partitions_by_time(future_partitions, &config)
+            .unwrap();
+        assert!(
+            result.is_empty(),
+            "Future partitions from 2030 should all be filtered out as too recent"
+        );
     }
 
     #[test]
     fn test_lookback_window_duration_conversion() {
-        let lw = LookbackWindow::Duration { hours: 2, minutes: 30 };
+        let lw = LookbackWindow::Duration {
+            hours: 2,
+            minutes: 30,
+        };
         let duration = lw.to_duration(PartitionGranularity::Hour);
         assert_eq!(duration, Duration::hours(2) + Duration::minutes(30));
 
@@ -964,5 +1157,620 @@ mod tests {
 
         let duration = lw_partitions.to_duration(PartitionGranularity::Day);
         assert_eq!(duration, Duration::days(5));
+    }
+
+    // Tests for format_partition_prefix (Hive-style and other partition formats)
+
+    #[test]
+    fn test_format_partition_prefix_hive_date_hour() {
+        // Hive-style: dt=YYYY-MM-DD/hour=HH
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "dt".to_string(),
+                    format: "%Y-%m-%d".to_string(),
+                    component: TimeComponent::Date,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let ts = Utc.with_ymd_and_hms(2024, 1, 15, 14, 30, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(ts, &spec);
+        assert_eq!(prefix, "dt=2024-01-15/hour=14");
+    }
+
+    #[test]
+    fn test_format_partition_prefix_hive_year_month_day_hour() {
+        // Hive-style: year=YYYY/month=MM/day=DD/hour=HH
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "year".to_string(),
+                    format: "%Y".to_string(),
+                    component: TimeComponent::Year,
+                },
+                PartitionTimeField {
+                    name: "month".to_string(),
+                    format: "%m".to_string(),
+                    component: TimeComponent::Month,
+                },
+                PartitionTimeField {
+                    name: "day".to_string(),
+                    format: "%d".to_string(),
+                    component: TimeComponent::Day,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let ts = Utc.with_ymd_and_hms(2024, 3, 5, 9, 0, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(ts, &spec);
+        assert_eq!(prefix, "year=2024/month=03/day=05/hour=09");
+    }
+
+    #[test]
+    fn test_format_partition_prefix_hive_date_only() {
+        // Hive-style day granularity: dt=YYYY-MM-DD
+        let spec = PartitionTimeSpec {
+            fields: vec![PartitionTimeField {
+                name: "dt".to_string(),
+                format: "%Y-%m-%d".to_string(),
+                component: TimeComponent::Date,
+            }],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Day,
+        };
+
+        let ts = Utc.with_ymd_and_hms(2024, 12, 25, 0, 0, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(ts, &spec);
+        assert_eq!(prefix, "dt=2024-12-25");
+    }
+
+    #[test]
+    fn test_format_partition_prefix_hive_with_minute() {
+        // Hive-style minute granularity: dt=YYYY-MM-DD/hour=HH/minute=MM
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "dt".to_string(),
+                    format: "%Y-%m-%d".to_string(),
+                    component: TimeComponent::Date,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+                PartitionTimeField {
+                    name: "minute".to_string(),
+                    format: "%M".to_string(),
+                    component: TimeComponent::Minute,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Minute,
+        };
+
+        let ts = Utc.with_ymd_and_hms(2024, 1, 15, 14, 35, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(ts, &spec);
+        assert_eq!(prefix, "dt=2024-01-15/hour=14/minute=35");
+    }
+
+    #[test]
+    fn test_format_partition_prefix_custom_field_names() {
+        // Custom field names (common in some systems)
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "event_date".to_string(),
+                    format: "%Y%m%d".to_string(), // Compact format without dashes
+                    component: TimeComponent::Date,
+                },
+                PartitionTimeField {
+                    name: "event_hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let ts = Utc.with_ymd_and_hms(2024, 1, 15, 14, 0, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(ts, &spec);
+        assert_eq!(prefix, "event_date=20240115/event_hour=14");
+    }
+
+    // ========================================================================
+    // Tests for generate_time_window_prefixes
+    // ========================================================================
+
+    #[test]
+    fn test_generate_prefixes_basic_hour_granularity() {
+        // Test that prefixes are generated with correct format
+        let source = create_test_source();
+        let config = TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![
+                    PartitionTimeField {
+                        name: "dt".to_string(),
+                        format: "%Y-%m-%d".to_string(),
+                        component: TimeComponent::Date,
+                    },
+                    PartitionTimeField {
+                        name: "hour".to_string(),
+                        format: "%H".to_string(),
+                        component: TimeComponent::Hour,
+                    },
+                ],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Hour,
+            },
+            lookback: LookbackWindow::Duration {
+                hours: 3,
+                minutes: 0,
+            },
+            skip_recent: 1,
+        };
+
+        let prefixes = source.generate_time_window_prefixes(&config);
+
+        // Should generate some prefixes (exact count depends on current time)
+        // But we can verify the format is correct
+        for prefix in &prefixes {
+            assert!(prefix.starts_with("data/events/dt="));
+            assert!(prefix.contains("/hour="));
+            assert!(prefix.ends_with("/"));
+        }
+
+        // With 3 hour lookback and skip_recent=1, we should have at most 2 prefixes
+        // (could be fewer depending on exact timing)
+        assert!(
+            prefixes.len() <= 3,
+            "Should have at most 3 prefixes with 3 hour lookback"
+        );
+    }
+
+    #[test]
+    fn test_generate_prefixes_year_month_day_hour_format() {
+        let source = create_test_source();
+        let config = TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![
+                    PartitionTimeField {
+                        name: "year".to_string(),
+                        format: "%Y".to_string(),
+                        component: TimeComponent::Year,
+                    },
+                    PartitionTimeField {
+                        name: "month".to_string(),
+                        format: "%m".to_string(),
+                        component: TimeComponent::Month,
+                    },
+                    PartitionTimeField {
+                        name: "day".to_string(),
+                        format: "%d".to_string(),
+                        component: TimeComponent::Day,
+                    },
+                    PartitionTimeField {
+                        name: "hour".to_string(),
+                        format: "%H".to_string(),
+                        component: TimeComponent::Hour,
+                    },
+                ],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Hour,
+            },
+            lookback: LookbackWindow::Duration {
+                hours: 2,
+                minutes: 0,
+            },
+            skip_recent: 1,
+        };
+
+        let prefixes = source.generate_time_window_prefixes(&config);
+
+        // Verify format: year=YYYY/month=MM/day=DD/hour=HH/
+        for prefix in &prefixes {
+            assert!(prefix.starts_with("data/events/year="));
+            assert!(prefix.contains("/month="));
+            assert!(prefix.contains("/day="));
+            assert!(prefix.contains("/hour="));
+            assert!(prefix.ends_with("/"));
+        }
+    }
+
+    #[test]
+    fn test_generate_prefixes_day_granularity() {
+        let source = create_test_source();
+        let config = TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![PartitionTimeField {
+                    name: "dt".to_string(),
+                    format: "%Y-%m-%d".to_string(),
+                    component: TimeComponent::Date,
+                }],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Day,
+            },
+            // Use 3 days lookback to guarantee at least 1 complete day in the window
+            lookback: LookbackWindow::Duration {
+                hours: 72,
+                minutes: 0,
+            },
+            skip_recent: 1,
+        };
+
+        let prefixes = source.generate_time_window_prefixes(&config);
+
+        // Should have 1-2 day prefixes (the number varies based on current time of day)
+        assert!(
+            !prefixes.is_empty(),
+            "Should have at least one day prefix with 3-day lookback"
+        );
+        assert!(prefixes.len() <= 3, "Should have at most 3 day prefixes");
+
+        // Verify format
+        for prefix in &prefixes {
+            assert!(prefix.starts_with("data/events/dt="));
+            assert!(
+                !prefix.contains("/hour="),
+                "Day granularity should not have hour"
+            );
+            assert!(prefix.ends_with("/"));
+        }
+    }
+
+    #[test]
+    fn test_generate_prefixes_minute_granularity() {
+        let source = create_test_source();
+        let config = TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![
+                    PartitionTimeField {
+                        name: "dt".to_string(),
+                        format: "%Y-%m-%d".to_string(),
+                        component: TimeComponent::Date,
+                    },
+                    PartitionTimeField {
+                        name: "hour".to_string(),
+                        format: "%H".to_string(),
+                        component: TimeComponent::Hour,
+                    },
+                    PartitionTimeField {
+                        name: "minute".to_string(),
+                        format: "%M".to_string(),
+                        component: TimeComponent::Minute,
+                    },
+                ],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Minute,
+            },
+            lookback: LookbackWindow::Duration {
+                hours: 0,
+                minutes: 10,
+            },
+            skip_recent: 1,
+        };
+
+        let prefixes = source.generate_time_window_prefixes(&config);
+
+        // Should have several minute prefixes
+        for prefix in &prefixes {
+            assert!(prefix.starts_with("data/events/dt="));
+            assert!(prefix.contains("/hour="));
+            assert!(prefix.contains("/minute="));
+            assert!(prefix.ends_with("/"));
+        }
+
+        // With 10 minute lookback and skip_recent=1, we should have at most 9 prefixes
+        assert!(
+            prefixes.len() <= 10,
+            "Should have at most 10 minute prefixes"
+        );
+    }
+
+    #[test]
+    fn test_generate_prefixes_empty_window() {
+        // When skip_recent >= lookback, window is empty
+        let source = create_test_source();
+        let config = TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![
+                    PartitionTimeField {
+                        name: "dt".to_string(),
+                        format: "%Y-%m-%d".to_string(),
+                        component: TimeComponent::Date,
+                    },
+                    PartitionTimeField {
+                        name: "hour".to_string(),
+                        format: "%H".to_string(),
+                        component: TimeComponent::Hour,
+                    },
+                ],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Hour,
+            },
+            lookback: LookbackWindow::Duration {
+                hours: 1,
+                minutes: 0,
+            },
+            skip_recent: 2, // Skip more than lookback
+        };
+
+        let prefixes = source.generate_time_window_prefixes(&config);
+        assert!(
+            prefixes.is_empty(),
+            "Should have no prefixes when skip_recent >= lookback"
+        );
+    }
+
+    #[test]
+    fn test_generate_prefixes_single_partition() {
+        // Test with small lookback to get approximately 1 partition
+        let source = create_test_source();
+        let config = TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![
+                    PartitionTimeField {
+                        name: "dt".to_string(),
+                        format: "%Y-%m-%d".to_string(),
+                        component: TimeComponent::Date,
+                    },
+                    PartitionTimeField {
+                        name: "hour".to_string(),
+                        format: "%H".to_string(),
+                        component: TimeComponent::Hour,
+                    },
+                ],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Hour,
+            },
+            // 3 hours lookback with skip_recent=2 leaves ~1 partition
+            // (exact count depends on where we are in the current hour)
+            lookback: LookbackWindow::Partitions { count: 3 },
+            skip_recent: 1,
+        };
+
+        let prefixes = source.generate_time_window_prefixes(&config);
+        // Due to boundary alignment, we might get 1-2 partitions
+        assert!(prefixes.len() >= 1, "Should have at least 1 partition");
+        assert!(prefixes.len() <= 2, "Should have at most 2 partitions");
+    }
+
+    #[test]
+    fn test_generate_prefixes_partitions_lookback() {
+        // Test using partition count instead of duration
+        let source = create_test_source();
+        let config = TimeWindowConfig {
+            partition_spec: PartitionTimeSpec {
+                fields: vec![
+                    PartitionTimeField {
+                        name: "dt".to_string(),
+                        format: "%Y-%m-%d".to_string(),
+                        component: TimeComponent::Date,
+                    },
+                    PartitionTimeField {
+                        name: "hour".to_string(),
+                        format: "%H".to_string(),
+                        component: TimeComponent::Hour,
+                    },
+                ],
+                timezone: "UTC".to_string(),
+                granularity: PartitionGranularity::Hour,
+            },
+            lookback: LookbackWindow::Partitions { count: 5 },
+            skip_recent: 1,
+        };
+
+        let prefixes = source.generate_time_window_prefixes(&config);
+        // With 5 partition lookback and skip_recent=1, we get 3-4 partitions
+        // (varies by 1 depending on current position within the hour)
+        assert!(prefixes.len() >= 3, "Should have at least 3 partitions");
+        assert!(prefixes.len() <= 4, "Should have at most 4 partitions");
+
+        // Verify all prefixes have correct format
+        for prefix in &prefixes {
+            assert!(prefix.starts_with("data/events/dt="));
+            assert!(prefix.contains("/hour="));
+        }
+    }
+
+    // ========================================================================
+    // Boundary crossing tests
+    // ========================================================================
+
+    #[test]
+    fn test_format_partition_prefix_boundary_midnight() {
+        // Test hour 00 formatting
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "dt".to_string(),
+                    format: "%Y-%m-%d".to_string(),
+                    component: TimeComponent::Date,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let ts = Utc.with_ymd_and_hms(2024, 1, 15, 0, 0, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(ts, &spec);
+        assert_eq!(prefix, "dt=2024-01-15/hour=00");
+    }
+
+    #[test]
+    fn test_format_partition_prefix_boundary_end_of_year() {
+        // Test December 31, hour 23
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "year".to_string(),
+                    format: "%Y".to_string(),
+                    component: TimeComponent::Year,
+                },
+                PartitionTimeField {
+                    name: "month".to_string(),
+                    format: "%m".to_string(),
+                    component: TimeComponent::Month,
+                },
+                PartitionTimeField {
+                    name: "day".to_string(),
+                    format: "%d".to_string(),
+                    component: TimeComponent::Day,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let ts = Utc.with_ymd_and_hms(2024, 12, 31, 23, 0, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(ts, &spec);
+        assert_eq!(prefix, "year=2024/month=12/day=31/hour=23");
+    }
+
+    #[test]
+    fn test_format_partition_prefix_leap_year() {
+        // Test February 29 in a leap year
+        let spec = PartitionTimeSpec {
+            fields: vec![PartitionTimeField {
+                name: "dt".to_string(),
+                format: "%Y-%m-%d".to_string(),
+                component: TimeComponent::Date,
+            }],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Day,
+        };
+
+        let ts = Utc.with_ymd_and_hms(2024, 2, 29, 0, 0, 0).unwrap(); // 2024 is a leap year
+        let prefix = ParquetSource::format_partition_prefix(ts, &spec);
+        assert_eq!(prefix, "dt=2024-02-29");
+    }
+
+    #[test]
+    fn test_format_partition_prefix_single_digit_padding() {
+        // Ensure single digit months/days/hours are zero-padded
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "year".to_string(),
+                    format: "%Y".to_string(),
+                    component: TimeComponent::Year,
+                },
+                PartitionTimeField {
+                    name: "month".to_string(),
+                    format: "%m".to_string(),
+                    component: TimeComponent::Month,
+                },
+                PartitionTimeField {
+                    name: "day".to_string(),
+                    format: "%d".to_string(),
+                    component: TimeComponent::Day,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let ts = Utc.with_ymd_and_hms(2024, 1, 5, 3, 0, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(ts, &spec);
+        assert_eq!(prefix, "year=2024/month=01/day=05/hour=03");
+    }
+
+    // ========================================================================
+    // Roundtrip tests (format -> parse -> same result)
+    // ========================================================================
+
+    #[test]
+    fn test_format_parse_roundtrip_hive_date_hour() {
+        let source = create_test_source();
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "dt".to_string(),
+                    format: "%Y-%m-%d".to_string(),
+                    component: TimeComponent::Date,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let original_ts = Utc.with_ymd_and_hms(2024, 6, 15, 14, 0, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(original_ts, &spec);
+        let parsed_ts = source.parse_partition_time(&prefix, &spec).unwrap();
+
+        assert_eq!(parsed_ts, original_ts);
+    }
+
+    #[test]
+    fn test_format_parse_roundtrip_year_month_day_hour() {
+        let source = create_test_source();
+        let spec = PartitionTimeSpec {
+            fields: vec![
+                PartitionTimeField {
+                    name: "year".to_string(),
+                    format: "%Y".to_string(),
+                    component: TimeComponent::Year,
+                },
+                PartitionTimeField {
+                    name: "month".to_string(),
+                    format: "%m".to_string(),
+                    component: TimeComponent::Month,
+                },
+                PartitionTimeField {
+                    name: "day".to_string(),
+                    format: "%d".to_string(),
+                    component: TimeComponent::Day,
+                },
+                PartitionTimeField {
+                    name: "hour".to_string(),
+                    format: "%H".to_string(),
+                    component: TimeComponent::Hour,
+                },
+            ],
+            timezone: "UTC".to_string(),
+            granularity: PartitionGranularity::Hour,
+        };
+
+        let original_ts = Utc.with_ymd_and_hms(2024, 11, 28, 22, 0, 0).unwrap();
+        let prefix = ParquetSource::format_partition_prefix(original_ts, &spec);
+        let parsed_ts = source.parse_partition_time(&prefix, &spec).unwrap();
+
+        assert_eq!(parsed_ts, original_ts);
     }
 }
