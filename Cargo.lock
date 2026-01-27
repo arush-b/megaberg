@@ -2275,6 +2275,7 @@ dependencies = [
  "object_store_opendal",
  "opendal 0.55.0",
  "parquet",
+ "percent-encoding",
  "serde",
  "serde_json",
  "serde_yaml",

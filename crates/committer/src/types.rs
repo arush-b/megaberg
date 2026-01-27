@@ -27,7 +27,7 @@ pub struct CommitRequest {
     pub namespace: Option<String>,
     pub table_name: Option<String>,
     pub added_data_files: Vec<DataFileInfo>,
-    pub deleted_data_files: Vec<String>, //provisioned for later, not being used yet
+    pub deleted_data_files: Vec<String>,
 }
 
 /// Output file produced by executor.
@@ -72,5 +72,51 @@ impl CommitContext {
                 table_location, new_snapshot_id, commit_uuid
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_commit_context_basic_creation() {
+        // Valid inputs produce non-empty paths, snapshot_id > 0
+        let ctx = CommitContext::new("s3://bucket/table", None, 0);
+
+        assert!(ctx.new_snapshot_id > 0);
+        assert!(!ctx.manifest_path.is_empty());
+        assert!(!ctx.manifest_list_path.is_empty());
+        assert!(ctx.manifest_path.contains("/metadata/"));
+        assert!(ctx.manifest_path.ends_with(".avro"));
+        assert!(ctx.manifest_list_path.contains("/metadata/snap-"));
+    }
+
+    #[test]
+    fn test_commit_context_sequence_number_increments() {
+        // new_sequence_number should be current_seq + 1
+        let ctx = CommitContext::new("s3://bucket/table", None, 5);
+        assert_eq!(ctx.new_sequence_number, 6);
+
+        let ctx2 = CommitContext::new("s3://bucket/table", None, 0);
+        assert_eq!(ctx2.new_sequence_number, 1);
+
+        let ctx3 = CommitContext::new("s3://bucket/table", Some(100), 99);
+        assert_eq!(ctx3.new_sequence_number, 100);
+    }
+
+    #[test]
+    fn test_commit_context_parent_snapshot_none() {
+        // First commit (parent=None) sets parent_snapshot_id to None
+        let ctx = CommitContext::new("s3://bucket/table", None, 0);
+        assert_eq!(ctx.parent_snapshot_id, None);
+    }
+
+    #[test]
+    fn test_commit_context_parent_snapshot_some() {
+        // Subsequent commits store the provided parent_snapshot_id
+        let parent_id = 1234567890123_i64;
+        let ctx = CommitContext::new("s3://bucket/table", Some(parent_id), 5);
+        assert_eq!(ctx.parent_snapshot_id, Some(parent_id));
     }
 }

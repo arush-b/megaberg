@@ -647,6 +647,7 @@ impl ParquetSource {
                     size_bytes: size,
                     record_count: 0,       // Unknown without reading footer
                     sequence_number: None, // Parquet sources don't have sequence numbers
+                    partition_values: HashMap::new(), // Parquet sources don't track partition values
                 });
             }
         }

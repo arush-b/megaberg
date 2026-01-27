@@ -50,6 +50,7 @@ iceberg-catalog-glue.workspace = true
 # Time and encoding
 chrono.workspace = true
 hex.workspace = true
+percent-encoding = "2.3"
 
 [dev-dependencies]
 tokio.workspace = true
