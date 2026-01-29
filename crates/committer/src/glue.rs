@@ -1,16 +1,17 @@
 //! Glue catalog commit implementation.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 use iceberg::table::Table;
-use iceberg::{Catalog, CatalogBuilder, NamespaceIdent, TableIdent};
-use iceberg_catalog_glue::GlueCatalogBuilder;
 
 use iceberg::spec::{SnapshotReference, SnapshotRetention, MAIN_BRANCH};
 use iceberg::TableUpdate;
 
-use crate::manifest::{write_delete_manifest, write_manifest, write_manifest_list};
+use crate::manifest::{
+    filter_manifests, rewrite_manifest_keeping, write_delete_manifest, write_manifest,
+    write_manifest_list,
+};
 use crate::snapshot::{build_snapshot, build_summary};
 use crate::types::{CommitContext, DataFileInfo};
 
@@ -22,6 +23,7 @@ pub struct GlueConfig {
 
 /// Glue catalog committer.
 pub struct GlueCommitter {
+    #[allow(dead_code)] // TODO: Use region from config in update_glue_table
     config: GlueConfig,
 }
 
@@ -30,129 +32,8 @@ impl GlueCommitter {
         Self { config }
     }
 
-    /// Load table from Glue catalog.
-    async fn load_table(&self, namespace: &str, table_name: &str) -> Result<Table> {
-        let mut props = HashMap::new();
-        props.insert("warehouse".to_string(), self.config.warehouse.clone());
-        if let Some(ref region) = self.config.region {
-            props.insert("region".to_string(), region.clone());
-        }
-
-        let catalog = GlueCatalogBuilder::default()
-            .load("glue", props)
-            .await
-            .context("Failed to build Glue catalog")?;
-
-        let table_ident = TableIdent::new(
-            NamespaceIdent::new(namespace.to_string()),
-            table_name.to_string(),
-        );
-
-        catalog
-            .load_table(&table_ident)
-            .await
-            .context("Failed to load table from Glue")
-    }
-
-    /// Commit added files to Glue catalog. Returns new snapshot ID.
-    pub async fn commit(
-        &self,
-        namespace: &str,
-        table_name: &str,
-        added_files: Vec<DataFileInfo>,
-        s3_bucket: &str,
-    ) -> Result<i64> {
-        if added_files.is_empty() {
-            tracing::info!("No files to commit, skipping");
-            return Ok(0);
-        }
-
-        tracing::info!(added_files = added_files.len(), "Committing to Glue");
-
-        let table = self.load_table(namespace, table_name).await?;
-        let metadata = table.metadata();
-
-        // Create commit context
-        let current_snapshot = metadata.current_snapshot();
-        let parent_snapshot_id = current_snapshot.map(|s| s.snapshot_id());
-        let current_seq = current_snapshot.map(|s| s.sequence_number()).unwrap_or(0);
-        let ctx = CommitContext::new(metadata.location(), parent_snapshot_id, current_seq);
-
-        let file_io = table.file_io();
-
-        // Get existing manifests from current snapshot
-        let existing_manifests = if let Some(snapshot) = current_snapshot {
-            let manifest_list = snapshot
-                .load_manifest_list(file_io, metadata)
-                .await
-                .context("Failed to load manifest list")?;
-            manifest_list.entries().to_vec()
-        } else {
-            Vec::new()
-        };
-
-        // Write new manifest
-        let new_manifest = write_manifest(
-            file_io,
-            &ctx,
-            metadata.current_schema().clone(),
-            metadata.default_partition_spec().clone(),
-            metadata.default_partition_spec_id(),
-            &added_files,
-            s3_bucket,
-        )
-        .await?;
-
-        // Write manifest list
-        write_manifest_list(file_io, &ctx, vec![new_manifest], existing_manifests).await?;
-
-        // Build snapshot
-        let summary_props = build_summary(&added_files);
-        let snapshot = build_snapshot(&ctx, metadata.current_schema().schema_id(), summary_props);
-
-        // Build table updates
-        let updates = vec![
-            TableUpdate::AddSnapshot { snapshot },
-            TableUpdate::SetSnapshotRef {
-                ref_name: MAIN_BRANCH.to_string(),
-                reference: SnapshotReference::new(
-                    ctx.new_snapshot_id,
-                    SnapshotRetention::branch(None, None, None),
-                ),
-            },
-        ];
-
-        // Apply updates to build new metadata
-        let mut builder = metadata.clone().into_builder(None);
-        for update in &updates {
-            builder = update.clone().apply(builder).context("Failed to apply update")?;
-        }
-        let new_metadata = builder.build().context("Failed to build metadata")?.metadata;
-
-        // Write metadata.json
-        let metadata_path = format!(
-            "{}/metadata/{:05}-{}.metadata.json",
-            metadata.location(),
-            ctx.new_sequence_number,
-            ctx.commit_uuid
-        );
-        new_metadata
-            .write_to(file_io, &metadata_path)
-            .await
-            .context("Failed to write metadata")?;
-
-        tracing::debug!(path = %metadata_path, "Wrote metadata");
-
-        // Update Glue table
-        self.update_glue_table(&table, &metadata_path).await?;
-
-        tracing::info!(snapshot_id = ctx.new_snapshot_id, "Commit complete");
-        Ok(ctx.new_snapshot_id)
-    }
-
-    /// Commit with an already-loaded Table reference.
-    /// This avoids reloading the table when the caller already has it.
-    /// Handles both added files and removed files (compaction scenario).
+    /// Takes a table reference from planner and commit to Glue
+    /// Handles both added files and removed files.
     pub async fn commit_with_table(
         &self,
         table: &Table,
@@ -161,9 +42,14 @@ impl GlueCommitter {
         s3_bucket: &str,
     ) -> Result<i64> {
         if added_files.is_empty() && removed_files.is_empty() {
-            tracing::info!("No files to commit, skipping");
+            tracing::info!("Nothing to commit, skipping commit.");
             return Ok(0);
         }
+
+
+        // #TODO
+        // add intelligent logic to determine the need for append/replace 
+        // for committing by looking at added_files + removed_files in the commit request
 
         tracing::info!(
             added = added_files.len(),
@@ -193,6 +79,11 @@ impl GlueCommitter {
         };
 
         let mut new_manifests = Vec::new();
+
+        // #TODO - p1
+        // Combine manifests together that fall in the similar partition
+        // scheme. 
+
 
         // Write manifest for added files
         if !added_files.is_empty() {
@@ -224,20 +115,46 @@ impl GlueCommitter {
             new_manifests.push(delete_manifest);
         }
 
-        // Per Iceberg spec: when files are deleted, we write a new manifest with DELETED
-        // entries. The old manifest is NOT carried forward to the new snapshot's manifest
-        // list - it remains accessible via the old snapshot for time travel.
-        //
-        // From the spec: "Snapshot-2 deletes data-1. The manifest is written as a new file,
-        // manifest-2, with data-1's status changed to DELETED. The new manifest-list is:
-        // [manifest-2]" - NOT [manifest-1, manifest-2].
-        //
-        // For compaction where we're deleting all files from old manifests, we don't carry
-        // forward any existing manifests. If we had partial deletes, we'd need to rewrite
-        // affected manifests with EXISTING entries for kept files.
+        // Filter existing manifests for partial compaction support
         let filtered_existing = if !removed_files.is_empty() {
-            // Don't carry forward old manifests - the delete manifest has DELETED entries
-            Vec::new()
+            let removed_paths: HashSet<String> =
+                removed_files.iter().map(|f| f.path.clone()).collect();
+
+            let filter_result = filter_manifests(file_io, existing_manifests, &removed_paths)
+                .await
+                .context("Failed to filter manifests")?;
+
+            tracing::debug!(
+                unaffected = filter_result.unaffected.len(),
+                to_rewrite = filter_result.to_rewrite.len(),
+                kept_files = filter_result.kept_file_count,
+                removed_files = filter_result.removed_file_count,
+                "Filtered existing manifests"
+            );
+
+            // Rewrite manifests that have a mix of kept and removed files
+            let mut rewritten = Vec::new();
+            for (idx, manifest) in filter_result.to_rewrite.iter().enumerate() {
+                if let Some(rewritten_manifest) = rewrite_manifest_keeping(
+                    file_io,
+                    &ctx,
+                    manifest,
+                    &removed_paths,
+                    metadata.current_schema().clone(),
+                    metadata.default_partition_spec().clone(),
+                    idx,
+                )
+                .await
+                .context("Failed to rewrite manifest")?
+                {
+                    rewritten.push(rewritten_manifest);
+                }
+            }
+
+            // Combine unaffected + rewritten manifests
+            let mut result = filter_result.unaffected;
+            result.extend(rewritten);
+            result
         } else {
             existing_manifests
         };
@@ -246,6 +163,8 @@ impl GlueCommitter {
         write_manifest_list(file_io, &ctx, new_manifests, filtered_existing).await?;
 
         // Build snapshot summary
+
+        // todo - Add delete file summary to summary props
         let summary_props = build_summary(&added_files);
         let snapshot = build_snapshot(&ctx, metadata.current_schema().schema_id(), summary_props);
 
@@ -280,7 +199,7 @@ impl GlueCommitter {
             .await
             .context("Failed to write metadata")?;
 
-        tracing::debug!(path = %metadata_path, "Wrote metadata");
+        tracing::debug!(path = %metadata_path, "Metadata written");
 
         // Update Glue table
         self.update_glue_table(table, &metadata_path).await?;

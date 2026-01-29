@@ -48,16 +48,14 @@ fn build_partition(
 }
 
 /// Parse a string partition value to an Iceberg Literal.
-/// For simplicity, we store all partition values as strings.
 fn parse_partition_value(value: &str) -> Literal {
-    // Try to parse as integer first (common for date/time partitions)
-    if let Ok(i) = value.parse::<i64>() {
-        return Literal::Primitive(PrimitiveLiteral::Long(i));
-    }
+    // Try i32 first (hour/day/month/year transforms produce i32)
     if let Ok(i) = value.parse::<i32>() {
         return Literal::Primitive(PrimitiveLiteral::Int(i));
     }
-    // Fall back to string
+    if let Ok(i) = value.parse::<i64>() {
+        return Literal::Primitive(PrimitiveLiteral::Long(i));
+    }
     Literal::Primitive(PrimitiveLiteral::String(value.to_string()))
 } 
 
@@ -481,10 +479,10 @@ mod tests {
 
         let result = build_partition(&spec, &Some(values));
 
-        // parse_partition_value tries i64 first, so numeric values become Long
+        // parse_partition_value tries i32 first, so numeric values become Int
         let expected = Struct::from_iter(vec![
-            Some(Literal::Primitive(PrimitiveLiteral::Long(2024))),
-            Some(Literal::Primitive(PrimitiveLiteral::Long(12))),
+            Some(Literal::Primitive(PrimitiveLiteral::Int(2024))),
+            Some(Literal::Primitive(PrimitiveLiteral::Int(12))),
         ]);
         assert_eq!(result, expected);
     }
@@ -502,7 +500,7 @@ mod tests {
         let result = build_partition(&spec, &Some(values));
 
         let expected = Struct::from_iter(vec![
-            Some(Literal::Primitive(PrimitiveLiteral::Long(2024))),
+            Some(Literal::Primitive(PrimitiveLiteral::Int(2024))),
             None, // month is null because it's missing
         ]);
         assert_eq!(result, expected);
@@ -522,7 +520,7 @@ mod tests {
         let result = build_partition(&spec, &Some(values));
 
         // Only year should be in result, extras are ignored
-        let expected = Struct::from_iter(vec![Some(Literal::Primitive(PrimitiveLiteral::Long(
+        let expected = Struct::from_iter(vec![Some(Literal::Primitive(PrimitiveLiteral::Int(
             2024,
         )))]);
         assert_eq!(result, expected);
@@ -543,8 +541,8 @@ mod tests {
 
         // Output must be year first, then month (spec order, not insertion order)
         let expected = Struct::from_iter(vec![
-            Some(Literal::Primitive(PrimitiveLiteral::Long(2023))), // year first
-            Some(Literal::Primitive(PrimitiveLiteral::Long(6))),    // month second
+            Some(Literal::Primitive(PrimitiveLiteral::Int(2023))), // year first
+            Some(Literal::Primitive(PrimitiveLiteral::Int(6))),    // month second
         ]);
         assert_eq!(result, expected);
     }
@@ -555,16 +553,16 @@ mod tests {
 
     #[test]
     fn test_parse_zero() {
-        // "0" parses as Long(0) since i64 parsing is tried first
+        // "0" parses as Int(0) since i32 is tried first
         let result = parse_partition_value("0");
-        assert_eq!(result, Literal::Primitive(PrimitiveLiteral::Long(0)));
+        assert_eq!(result, Literal::Primitive(PrimitiveLiteral::Int(0)));
     }
 
     #[test]
     fn test_parse_leading_zeros() {
-        // Leading zeros are stripped when parsing as number: "007" -> Long(7)
+        // Leading zeros are stripped when parsing as number: "007" -> Int(7)
         let result = parse_partition_value("007");
-        assert_eq!(result, Literal::Primitive(PrimitiveLiteral::Long(7)));
+        assert_eq!(result, Literal::Primitive(PrimitiveLiteral::Int(7)));
     }
 
     #[test]

@@ -2,8 +2,10 @@
 
 mod glue;
 mod manifest;
+mod rest;
 mod snapshot;
 mod types;
 
 pub use glue::{GlueCommitter, GlueConfig};
-pub use types::{CommitRequest, DataFileInfo, OutputFile, TableProvider, TaskResult};
+pub use rest::{RestCommitter, RestConfig};
+pub use types::{DataFileInfo, OutputFile, TaskResult};

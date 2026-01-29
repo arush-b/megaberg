@@ -14,17 +14,17 @@
   },
   "table": {
     "namespace": "default",
-    "name": "data_gen_test"
+    "name": "megaberg_1gb"
   },
   "generate": {
-    "total_size_mb": 100,
+    "total_size_mb": 40,
     "file_size_kb": 10,
-    "parallelism": 4,
+    "parallelism": 2,
     "compression": "uncompressed",
     "partitions": {
       "num_aliases": 1,
       "workspaces_per_alias": 1,
-      "clusters_per_workspace": 1
+      "clusters_per_workspace":5
     }
   }
 }

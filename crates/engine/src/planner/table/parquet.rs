@@ -21,8 +21,10 @@ use parquet::file::metadata::ParquetMetaDataReader;
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
+use committer::OutputFile;
+
 use super::super::discovery::{FileInfo, PartitionFileMap, TableFormat};
-use super::sink::{CommitResult, OutputFileInfo, TableSink};
+use super::sink::{CommitResult, TableSink};
 use super::source::TableSource;
 
 /// Minimum bytes to read for parquet footer (magic + footer length).
@@ -858,7 +860,7 @@ impl TableSink for ParquetSource {
 
     async fn commit(
         &self,
-        added_files: Vec<OutputFileInfo>,
+        added_files: Vec<OutputFile>,
         _removed_files: Vec<String>,
     ) -> Result<CommitResult> {
         // Parquet has no catalog - files are written directly to S3.

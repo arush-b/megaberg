@@ -2,24 +2,21 @@
   "s3": {
     "endpoint": "https://s3.us-east-1.amazonaws.com",
     "bucket": "laminar-dev",
-    "region": "us-east-1"
+    "region": "us-east-1",
+    "use_default_credentials": true
   },
-  "catalog": {
-    "type": "glue",
-    "warehouse": "s3://laminar-dev/warehouse",
-    "region": "us-east-1"
-  },
-  "table": {
+  "source": {
+    "type": "iceberg",
+    "catalog": {
+      "type": "glue",
+      "warehouse": "s3://laminar-dev/warehouse",
+      "region": "us-east-1"
+    },
     "namespace": "laminar_iceberg",
-    "name": "laminar_shreyas_compaction"
+    "table": "megaberg_1GB_test"
   },
   "compaction": {
     "target_file_size_mb": 256,
     "min_files_per_partition": 2
-  },
-  "generate": {
-    "num_files": 25,
-    "rows_per_file": 500000,
-    "compression": "none"
   }
 }

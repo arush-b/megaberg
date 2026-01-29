@@ -37,7 +37,7 @@ mod iceberg;
 mod parquet;
 
 pub use source::TableSource;
-pub use sink::{TableSink, CommitResult, OutputFileInfo};
+pub use sink::{TableSink, CommitResult};
 pub use iceberg::{IcebergTable, CatalogConfig};
 pub use parquet::{
     ParquetSource,

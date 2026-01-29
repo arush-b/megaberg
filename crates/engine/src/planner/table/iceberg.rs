@@ -17,13 +17,20 @@ use iceberg::table::Table;
 use iceberg::{Catalog, NamespaceIdent, TableIdent};
 use iceberg_catalog_glue::GlueCatalogBuilder;
 use iceberg_catalog_rest::RestCatalogBuilder;
+use percent_encoding::{percent_decode_str, utf8_percent_encode, NON_ALPHANUMERIC};
 use tracing::{debug, info};
 
-use committer::{DataFileInfo, GlueCommitter, GlueConfig};
+use committer::{DataFileInfo, GlueCommitter, GlueConfig, OutputFile, RestCommitter, RestConfig};
 
 use super::super::discovery::{FileInfo, PartitionFileMap, TableFormat};
-use super::sink::{CommitResult, OutputFileInfo, TableSink};
+use super::sink::{CommitResult, TableSink};
 use super::source::TableSource;
+
+/// Enum to hold different committer types.
+enum CatalogCommitter {
+    Glue(GlueCommitter),
+    Rest(RestCommitter),
+}
 
 /// Default number of manifests to read in parallel.
 const DEFAULT_MANIFEST_PARALLELISM: usize = 8;
@@ -56,10 +63,8 @@ pub struct IcebergTable {
     table: Table,
     /// Number of manifests to read in parallel
     manifest_parallelism: usize,
-    /// Committer for writing back to Glue catalog
-    committer: GlueCommitter,
-    /// S3 bucket (extracted from table location)
-    s3_bucket: String,
+    /// Committer for writing back to the catalog (Glue or REST)
+    committer: CatalogCommitter,
     /// Cached file info from discovery (path -> FileInfo)
     file_info_cache: std::sync::RwLock<HashMap<String, FileInfo>>,
 }
@@ -69,10 +74,6 @@ impl IcebergTable {
     pub async fn new(config: &CatalogConfig, namespace: &str, table_name: &str) -> Result<Self> {
         let table = Self::load_table(config, namespace, table_name).await?;
 
-        // Extract bucket from table location (s3://bucket/path -> bucket)
-        let location = table.metadata().location();
-        let s3_bucket = Self::extract_bucket(location)?;
-
         // Create committer based on catalog config
         let committer = Self::create_committer(config)?;
 
@@ -80,7 +81,6 @@ impl IcebergTable {
             table,
             manifest_parallelism: DEFAULT_MANIFEST_PARALLELISM,
             committer,
-            s3_bucket,
             file_info_cache: std::sync::RwLock::new(HashMap::new()),
         })
     }
@@ -102,8 +102,8 @@ impl IcebergTable {
         Ok(bucket)
     }
 
-    /// Create a GlueCommitter from catalog config.
-    fn create_committer(config: &CatalogConfig) -> Result<GlueCommitter> {
+    /// Create a committer from catalog config.
+    fn create_committer(config: &CatalogConfig) -> Result<CatalogCommitter> {
         match config {
             CatalogConfig::Glue {
                 warehouse, region, ..
@@ -112,12 +112,19 @@ impl IcebergTable {
                     warehouse: warehouse.clone(),
                     region: region.clone(),
                 };
-                Ok(GlueCommitter::new(glue_config))
+                Ok(CatalogCommitter::Glue(GlueCommitter::new(glue_config)))
             }
-            CatalogConfig::Rest { .. } => {
-                // For REST catalogs, we still use Glue committer for now
-                // In future, we'd implement RestCommitter
-                anyhow::bail!("REST catalog commit not yet implemented - use Glue catalog")
+            CatalogConfig::Rest {
+                uri,
+                warehouse,
+                props,
+            } => {
+                let rest_config = RestConfig {
+                    uri: uri.clone(),
+                    warehouse: warehouse.clone(),
+                    props: props.clone(),
+                };
+                Ok(CatalogCommitter::Rest(RestCommitter::new(rest_config)))
             }
         }
     }
@@ -127,20 +134,16 @@ impl IcebergTable {
         table: Table,
         warehouse: String,
         region: Option<String>,
-    ) -> Result<Self> {
-        let location = table.metadata().location();
-        let s3_bucket = Self::extract_bucket(location)?;
-
+    ) -> Self {
         let glue_config = GlueConfig { warehouse, region };
-        let committer = GlueCommitter::new(glue_config);
+        let committer = CatalogCommitter::Glue(GlueCommitter::new(glue_config));
 
-        Ok(Self {
+        Self {
             table,
             manifest_parallelism: DEFAULT_MANIFEST_PARALLELISM,
             committer,
-            s3_bucket,
             file_info_cache: std::sync::RwLock::new(HashMap::new()),
-        })
+        }
     }
 
     /// Set the number of manifests to read in parallel.
@@ -326,6 +329,9 @@ impl IcebergTable {
             // Format partition key using field names and values
             let partition_key = Self::format_partition_key(partition, partition_field_names);
 
+            // Build partition values map for commit
+            let partition_values = Self::build_partition_values_map(partition, partition_field_names);
+
             entries.push((
                 partition_key,
                 FileInfo {
@@ -333,6 +339,7 @@ impl IcebergTable {
                     size_bytes: data_file.file_size_in_bytes(),
                     record_count: data_file.record_count(),
                     sequence_number: entry.sequence_number(),
+                    partition_values,
                 },
             ));
         }
@@ -342,6 +349,7 @@ impl IcebergTable {
     }
 
     /// Format partition struct as a key string like "year=2024/month=01".
+    /// Values are percent-encoded to handle special characters like '/' and '='.
     fn format_partition_key(
         partition: &iceberg::spec::Struct,
         partition_field_names: &[String],
@@ -356,14 +364,36 @@ impl IcebergTable {
             let value = partition.fields().get(i).and_then(|v| v.as_ref());
 
             let value_str = match value {
-                Some(literal) => Self::literal_to_string(literal),
-                None => "__HIVE_DEFAULT_PARTITION__".to_string(),
+                Some(literal) => {
+                    let raw = Self::literal_to_string(literal);
+                    // Percent-encode to handle '/', '=', and other special chars
+                    utf8_percent_encode(&raw, NON_ALPHANUMERIC).to_string()
+                }
+                None => Self::HIVE_DEFAULT_PARTITION.to_string(),
             };
 
             parts.push(format!("{}={}", field_name, value_str));
         }
 
         parts.join("/")
+    }
+
+    /// Build a HashMap of partition field names to string values for commit.
+    fn build_partition_values_map(
+        partition: &iceberg::spec::Struct,
+        partition_field_names: &[String],
+    ) -> HashMap<String, String> {
+        let mut map = HashMap::new();
+
+        for (i, field_name) in partition_field_names.iter().enumerate() {
+            let value = partition.fields().get(i).and_then(|v| v.as_ref());
+
+            if let Some(literal) = value {
+                map.insert(field_name.clone(), Self::literal_to_string(literal));
+            }
+        }
+
+        map
     }
 
     /// Convert an iceberg Literal to a string representation for partition keys.
@@ -395,6 +425,42 @@ impl IcebergTable {
             PrimitiveLiteral::AboveMax => "ABOVE_MAX".to_string(),
             PrimitiveLiteral::BelowMin => "BELOW_MIN".to_string(),
         }
+    }
+
+    /// Hive-style sentinel value for null partitions.
+    const HIVE_DEFAULT_PARTITION: &'static str = "__HIVE_DEFAULT_PARTITION__";
+
+    /// Parse a Hive-style partition key string into a HashMap.
+    /// Input format: "field1=value1/field2=value2"
+    /// Returns: HashMap { "field1" => "value1", "field2" => "value2" }
+    ///
+    /// Values are percent-decoded to reverse the encoding done in format_partition_key.
+    /// Null partition values (represented as __HIVE_DEFAULT_PARTITION__) are excluded
+    /// from the returned HashMap (will become None in manifest).
+    fn parse_partition_key(partition_key: &str) -> HashMap<String, String> {
+        if partition_key.is_empty() {
+            return HashMap::new();
+        }
+
+        partition_key
+            .split('/')
+            .filter_map(|part| {
+                let mut parts = part.splitn(2, '=');
+                let key = parts.next()?;
+                let value = parts.next()?;
+                // Skip Hive null sentinel - let it be None in the HashMap
+                // so build_partition() will write null to the manifest
+                if value == Self::HIVE_DEFAULT_PARTITION {
+                    return None;
+                }
+                // Percent-decode the value to reverse encoding from format_partition_key
+                let decoded = percent_decode_str(value)
+                    .decode_utf8()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|_| value.to_string());
+                Some((key.to_string(), decoded))
+            })
+            .collect()
     }
 }
 
@@ -451,18 +517,25 @@ impl TableSink for IcebergTable {
 
     async fn commit(
         &self,
-        added_files: Vec<OutputFileInfo>,
+        added_files: Vec<OutputFile>,
         removed_files: Vec<String>,
     ) -> Result<CommitResult> {
-        // Convert OutputFileInfo to DataFileInfo for added files
+        // Convert OutputFile to DataFileInfo for added files
         let added: Vec<DataFileInfo> = added_files
             .iter()
-            .map(|f| DataFileInfo {
-                path: f.path.clone(),
-                size_bytes: f.size_bytes,
-                record_count: f.record_count,
-                partition_values: None,
-                sequence_number: None, // New files get sequence from snapshot
+            .map(|f| {
+                let partition_values = Self::parse_partition_key(&f.partition);
+                DataFileInfo {
+                    path: f.path.clone(),
+                    size_bytes: f.size_bytes,
+                    record_count: f.record_count,
+                    partition_values: if partition_values.is_empty() {
+                        None
+                    } else {
+                        Some(partition_values)
+                    },
+                    sequence_number: None, // New files get sequence from snapshot
+                }
             })
             .collect();
 
@@ -477,7 +550,11 @@ impl TableSink for IcebergTable {
                             path: path.clone(),
                             size_bytes: info.size_bytes,
                             record_count: info.record_count,
-                            partition_values: None,
+                            partition_values: if info.partition_values.is_empty() {
+                                None
+                            } else {
+                                Some(info.partition_values.clone())
+                            },
                             sequence_number: info.sequence_number,
                         }
                     } else {
@@ -498,11 +575,20 @@ impl TableSink for IcebergTable {
         let files_added = added.len();
         let files_removed = removed.len();
 
-        // Delegate to GlueCommitter
-        let snapshot_id = self
-            .committer
-            .commit_with_table(&self.table, added, removed, &self.s3_bucket)
-            .await?;
+        // Extract bucket from table location
+        let s3_bucket = Self::extract_bucket(self.table.metadata().location())?;
+
+        // Delegate to appropriate committer
+        let snapshot_id = match &self.committer {
+            CatalogCommitter::Glue(glue) => {
+                glue.commit_with_table(&self.table, added, removed, &s3_bucket)
+                    .await?
+            }
+            CatalogCommitter::Rest(rest) => {
+                rest.commit_with_table(&self.table, added, removed, &s3_bucket)
+                    .await?
+            }
+        };
 
         Ok(CommitResult {
             snapshot_id: Some(snapshot_id),

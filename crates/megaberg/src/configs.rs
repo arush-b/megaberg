@@ -184,14 +184,35 @@ pub enum CatalogConfigFile {
     },
 }
 
-impl From<CatalogConfigFile> for CatalogConfig {
-    fn from(cfg: CatalogConfigFile) -> Self {
-        match cfg {
-            CatalogConfigFile::Rest { uri, warehouse } => CatalogConfig::Rest {
-                uri,
-                warehouse,
-                props: HashMap::new(),
-            },
+impl CatalogConfigFile {
+    /// Convert to CatalogConfig, injecting S3 props for FileIO.
+    fn into_catalog_config(self, s3: &S3Config) -> CatalogConfig {
+        match self {
+            CatalogConfigFile::Rest { uri, warehouse } => {
+                let mut props = HashMap::new();
+                // S3 settings for iceberg-rust FileIO
+                props.insert("s3.endpoint".to_string(), s3.endpoint.clone());
+                props.insert("s3.region".to_string(), s3.region.clone());
+                if !s3.access_key.is_empty() {
+                    props.insert("s3.access-key-id".to_string(), s3.access_key.clone());
+                }
+                if !s3.secret_key.is_empty() {
+                    props.insert("s3.secret-access-key".to_string(), s3.secret_key.clone());
+                }
+                // MinIO-specific settings
+                props.insert("s3.allow-http".to_string(), "true".to_string());
+                props.insert("s3.path-style-access".to_string(), "true".to_string());
+                if !s3.use_default_credentials {
+                    props.insert("s3.disable-config-load".to_string(), "true".to_string());
+                    props.insert("s3.disable-ec2-metadata".to_string(), "true".to_string());
+                }
+
+                CatalogConfig::Rest {
+                    uri,
+                    warehouse,
+                    props,
+                }
+            }
             CatalogConfigFile::Glue {
                 warehouse,
                 catalog_id,
@@ -344,8 +365,8 @@ impl TimeWindowConfigFile {
 // ============================================================================
 
 impl SourceConfigFile {
-    /// Convert to SourceConfig, resolving bucket from S3 config.
-    fn into_source_config(self, bucket: &str) -> SourceConfig {
+    /// Convert to SourceConfig, injecting S3 props into catalog config.
+    fn into_source_config(self, s3: &S3Config) -> SourceConfig {
         match self {
             SourceConfigFile::Iceberg {
                 catalog,
@@ -353,7 +374,7 @@ impl SourceConfigFile {
                 table,
             } => SourceConfig {
                 location: TableLocation::Iceberg {
-                    catalog: catalog.into(),
+                    catalog: catalog.into_catalog_config(s3),
                     namespace,
                     table,
                 },
@@ -365,7 +386,7 @@ impl SourceConfigFile {
             } => SourceConfig {
                 location: TableLocation::Parquet {
                     path: base_path,
-                    bucket: bucket.to_string(),
+                    bucket: s3.bucket.clone(),
                 },
                 time_window: time_window.map(|tw| tw.into_time_window_config()),
             },
@@ -374,21 +395,21 @@ impl SourceConfigFile {
 }
 
 impl TableLocationFile {
-    /// Convert to TableLocation, resolving bucket from S3 config.
-    fn into_table_location(self, bucket: &str) -> TableLocation {
+    /// Convert to TableLocation, injecting S3 props into catalog config.
+    fn into_table_location(self, s3: &S3Config) -> TableLocation {
         match self {
             TableLocationFile::Iceberg {
                 catalog,
                 namespace,
                 table,
             } => TableLocation::Iceberg {
-                catalog: catalog.into(),
+                catalog: catalog.into_catalog_config(s3),
                 namespace,
                 table,
             },
             TableLocationFile::Parquet { path } => TableLocation::Parquet {
                 path,
-                bucket: bucket.to_string(),
+                bucket: s3.bucket.clone(),
             },
         }
     }
@@ -398,15 +419,14 @@ impl ConfigFile {
     /// Validate and convert to AppConfig.
     pub fn into_app_config(self) -> Result<AppConfig> {
         let s3: S3Config = self.s3.into();
-        let bucket = &s3.bucket;
 
         // Convert source (location + discovery options)
-        let source = self.source.into_source_config(bucket);
+        let source = self.source.into_source_config(&s3);
 
         // Sink defaults to source location (the elegant one-liner!)
         let sink = self
             .sink
-            .map(|s| s.into_table_location(bucket))
+            .map(|s| s.into_table_location(&s3))
             .unwrap_or_else(|| source.location.clone());
 
         let compaction = self.compaction.unwrap_or_default();

@@ -14,11 +14,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use engine::planner::OutputFileInfo;
+use committer::{OutputFile, TaskResult};
 use tracing::{info, warn};
 
 use crate::configs::{AppConfig, ConfigFile};
-use crate::runner::TaskResult;
 
 /// Megaberg: Iceberg table compaction tool
 #[derive(Parser, Debug)]
@@ -176,11 +175,7 @@ async fn commit_results(
 
     for result in task_results {
         removed_files.extend(result.input_files);
-        added_files.extend(result.output_files.into_iter().map(|f| OutputFileInfo {
-            path: f.path,
-            size_bytes: f.size_bytes,
-            record_count: f.record_count,
-        }));
+        added_files.extend(result.output_files);
     }
 
     info!(

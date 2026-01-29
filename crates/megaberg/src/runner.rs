@@ -1,32 +1,17 @@
 //! Execution phase: executor lifecycle, task submission, result collection.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use arrow::datatypes::SchemaRef;
+use committer::{OutputFile, TaskResult};
 use engine::executor::{CompactionConfig, Executor, ExecutorConfig, WrittenFile};
 use engine::planner::CompactionTask;
 use parquet::basic::Compression;
 use tracing::{info, warn};
 
 use crate::configs::AppConfig;
-
-/// Result of a single compaction task.
-#[derive(Debug, Clone)]
-pub struct TaskResult {
-    /// Input file paths that were compacted (to be removed)
-    pub input_files: Vec<String>,
-    /// Output files that were created
-    pub output_files: Vec<OutputFile>,
-}
-
-/// Information about an output file.
-#[derive(Debug, Clone)]
-pub struct OutputFile {
-    pub path: String,
-    pub size_bytes: u64,
-    pub record_count: u64,
-}
 
 /// Result of the execution phase.
 pub struct ExecutionResult {
@@ -81,6 +66,12 @@ pub async fn run(
         "Submitting tasks to executor"
     );
 
+    // Build task_id -> partition lookup for result processing
+    let task_partitions: HashMap<String, String> = tasks
+        .iter()
+        .map(|t| (t.task_id.clone(), t.partition.clone()))
+        .collect();
+
     // Submit all tasks
     for task in &tasks {
         handle
@@ -103,9 +94,11 @@ pub async fn run(
     while completed < task_count {
         if let Some((task_id, input_files, result)) = handle.recv().await {
             completed += 1;
+            let partition = task_partitions.get(&task_id).cloned().unwrap_or_default();
             process_result(
                 &task_id,
                 input_files,
+                &partition,
                 result,
                 completed,
                 task_count,
@@ -152,6 +145,7 @@ pub async fn run(
 fn process_result(
     task_id: &str,
     input_files: Vec<String>,
+    partition: &str,
     result: Result<Vec<WrittenFile>, String>,
     completed: usize,
     total: usize,
@@ -182,6 +176,7 @@ fn process_result(
                         path: f.path.clone(),
                         size_bytes: f.size_bytes,
                         record_count: f.record_count,
+                        partition: partition.to_string(),
                     })
                     .collect(),
             });

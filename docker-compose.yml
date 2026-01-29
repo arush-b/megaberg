@@ -71,29 +71,33 @@ services:
       - AWS_REGION=us-east-1
     entrypoint: >
       /bin/sh -c "
-      until (/usr/bin/mc config host add minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
-      /usr/bin/mc rm -r --force minio/lakehouse/;
-      /usr/bin/mc mb minio/lakehouse/;
-      /usr/bin/mc policy set public minio/lakehouse/;
+      until (/usr/bin/mc alias set minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc mb minio/lakehouse --ignore-existing;
+      /usr/bin/mc anonymous set public minio/lakehouse;
+      echo 'Bucket lakehouse ready';
       tail -f /dev/null
       "
 
-  amoro:
-    image: apache/amoro
-    container_name: amoro
-    ports:
-      - "8081:8081"
-      - "1630:1630"
-      - "1260:1260"
-    environment:
-      - JVM_XMS=1024
+  megaberg:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: megaberg
     networks:
       - iceberg_net
+    depends_on:
+      - rest
+      - minio
+      - mc
     volumes:
-      - ./amoro:/tmp/lakehouse/
-    command: ["/entrypoint.sh", "ams"]
-    tty: true
-    stdin_open: true
+      - ./config:/config
+      - ./lakehouse:/home/iceberg/lakehouse
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+      - RUST_LOG=megaberg=info,engine=info
+    command: ["tail", "-f", "/dev/null"]
 
 networks:
   iceberg_net:
