@@ -309,7 +309,7 @@ impl IcebergTable {
         let manifest = manifest_file
             .load_manifest(file_io)
             .await
-            .with_context(|| format!("Failed to load manifest: {}", manifest_path))?;
+            .with_context(|| format!("Failed to load manifest: {manifest_path}"))?;
 
         let mut entries = Vec::new();
 
@@ -369,7 +369,7 @@ impl IcebergTable {
                 None => Self::HIVE_DEFAULT_PARTITION.to_string(),
             };
 
-            parts.push(format!("{}={}", field_name, value_str));
+            parts.push(format!("{field_name}={value_str}"));
         }
 
         parts.join("/")
@@ -398,7 +398,7 @@ impl IcebergTable {
         match literal {
             Literal::Primitive(prim) => Self::primitive_to_string(prim),
             // For complex types, use debug format as fallback
-            _ => format!("{:?}", literal),
+            _ => format!("{literal:?}"),
         }
     }
 

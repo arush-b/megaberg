@@ -140,31 +140,28 @@ fn print_summary(
     );
 
     println!("\n========== COMPACTION SUMMARY ==========");
-    println!("Workers:                 {:>10}", worker_count);
+    println!("Workers:                 {worker_count:>10}");
     println!(
         "Planning time:           {:>10.2} ms",
         planning_time.as_secs_f64() * 1000.0
     );
-    println!(
-        "Avg task compaction:     {:>10.2} s",
-        avg_task_duration_secs
-    );
+    println!("Avg task compaction:     {avg_task_duration_secs:>10.2} s");
     println!(
         "Total compaction time:   {:>10.2} s",
         execution_time.as_secs_f64()
     );
     println!("-----------------------------------------");
-    println!("Input files:             {:>10}", total_input_files);
+    println!("Input files:             {total_input_files:>10}");
     println!(
         "Input size:              {:>10} MB",
         total_input_bytes / 1024 / 1024
     );
-    println!("Output files:            {:>10}", total_output_files);
+    println!("Output files:            {total_output_files:>10}");
     println!(
         "Output size:             {:>10} MB",
         total_output_bytes / 1024 / 1024
     );
-    println!("Throughput (input):      {:>10.2} MB/s", input_throughput);
+    println!("Throughput (input):      {input_throughput:>10.2} MB/s");
     println!("=========================================\n");
 }
 

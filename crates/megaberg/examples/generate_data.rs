@@ -203,7 +203,7 @@ fn create_batch(schema: &SchemaRef, start_id: i64, num_rows: usize) -> RecordBat
     let categories: Vec<String> = ids.iter().map(|i| format!("cat_{:03}", i % 100)).collect();
     let descriptions: Vec<String> = ids
         .iter()
-        .map(|i| format!("Description for record {}", i))
+        .map(|i| format!("Description for record {i}"))
         .collect();
 
     RecordBatch::try_new(
@@ -360,7 +360,7 @@ async fn commit_files<C: Catalog>(
     // Build data files
     let mut data_files = Vec::new();
     for (path, file_size, record_count) in files {
-        let full_path = format!("s3://{}/{}", bucket, path);
+        let full_path = format!("s3://{bucket}/{path}");
 
         let data_file = DataFileBuilder::default()
             .content(DataContentType::Data)
@@ -440,11 +440,11 @@ async fn main() -> Result<()> {
     // Write files based on catalog type
     match &config.catalog {
         CatalogConfigJson::Rest { uri, warehouse } => {
-            println!("Using REST catalog: {}", uri);
+            println!("Using REST catalog: {uri}");
             let catalog = build_rest_catalog(uri, warehouse.as_deref(), &config.s3).await?;
             let table = catalog.load_table(&table_ident).await?;
             table_location = table.metadata().location().to_string();
-            println!("Table location: {}", table_location);
+            println!("Table location: {table_location}");
 
             // Generate and write files
             let mut files = Vec::new();
@@ -455,7 +455,7 @@ async fn main() -> Result<()> {
             let file_uuid = Uuid::new_v4();
 
             for i in 0..num_files {
-                let path = format!("{}/{}-data_{:04}.parquet", data_dir, file_uuid, i);
+                let path = format!("{data_dir}/{file_uuid}-data_{i:04}.parquet");
                 let start_id = (i * rows_per_file) as i64;
 
                 print!("  Writing file {}/{}: {}...", i + 1, num_files, path);
@@ -483,7 +483,7 @@ async fn main() -> Result<()> {
             catalog_id,
             region,
         } => {
-            println!("Using Glue catalog (warehouse: {})", warehouse);
+            println!("Using Glue catalog (warehouse: {warehouse})");
             let catalog =
                 build_glue_catalog(warehouse, catalog_id.as_deref(), region.as_deref()).await?;
 
@@ -553,7 +553,7 @@ async fn main() -> Result<()> {
                 }
             };
             table_location = table.metadata().location().to_string();
-            println!("Table location: {}", table_location);
+            println!("Table location: {table_location}");
 
             // Generate and write files
             let mut files = Vec::new();
@@ -564,7 +564,7 @@ async fn main() -> Result<()> {
             let file_uuid = Uuid::new_v4();
 
             for i in 0..num_files {
-                let path = format!("{}/{}-data_{:04}.parquet", data_dir, file_uuid, i);
+                let path = format!("{data_dir}/{file_uuid}-data_{i:04}.parquet");
                 let start_id = (i * rows_per_file) as i64;
 
                 print!("  Writing file {}/{}: {}...", i + 1, num_files, path);

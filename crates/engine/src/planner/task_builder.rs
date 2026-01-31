@@ -51,7 +51,7 @@ fn build_task(group: FileGroup, table_location: &str) -> CompactionTask {
     };
 
     let output_prefix = if group.partition.is_empty() {
-        format!("{}/data", table_path)
+        format!("{table_path}/data")
     } else {
         format!("{}/data/{}", table_path, group.partition)
     };

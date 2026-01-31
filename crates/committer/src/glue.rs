@@ -276,7 +276,7 @@ impl GlueCommitter {
                     );
                 }
             }
-            anyhow::anyhow!("Failed to update Glue table: {}", e)
+            anyhow::anyhow!("Failed to update Glue table: {e}")
         })?;
 
         tracing::debug!("Updated Glue metadata_location");

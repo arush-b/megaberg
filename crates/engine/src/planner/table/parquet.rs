@@ -219,7 +219,7 @@ impl ParquetSource {
         let base_path = if base_path.is_empty() || base_path.ends_with('/') {
             base_path
         } else {
-            format!("{}/", base_path)
+            format!("{base_path}/")
         };
 
         Self {
@@ -330,7 +330,7 @@ impl ParquetSource {
                 .lister_with(&current)
                 .recursive(false)
                 .await
-                .with_context(|| format!("Failed to list directory: {}", current))?
+                .with_context(|| format!("Failed to list directory: {current}"))?
                 .try_collect()
                 .await?;
 
@@ -473,36 +473,36 @@ impl ParquetSource {
                 TimeComponent::Year => {
                     year = value
                         .parse()
-                        .with_context(|| format!("Failed to parse year '{}'", value))?;
+                        .with_context(|| format!("Failed to parse year '{value}'"))?;
                 }
                 TimeComponent::Month => {
                     month = value
                         .parse()
-                        .with_context(|| format!("Failed to parse month '{}'", value))?;
+                        .with_context(|| format!("Failed to parse month '{value}'"))?;
                 }
                 TimeComponent::Day => {
                     day = value
                         .parse()
-                        .with_context(|| format!("Failed to parse day '{}'", value))?;
+                        .with_context(|| format!("Failed to parse day '{value}'"))?;
                 }
                 TimeComponent::Hour => {
                     hour = value
                         .parse()
-                        .with_context(|| format!("Failed to parse hour '{}'", value))?;
+                        .with_context(|| format!("Failed to parse hour '{value}'"))?;
                 }
                 TimeComponent::Minute => {
                     minute = value
                         .parse()
-                        .with_context(|| format!("Failed to parse minute '{}'", value))?;
+                        .with_context(|| format!("Failed to parse minute '{value}'"))?;
                 }
             }
         }
 
         // Build NaiveDateTime
         let date = NaiveDate::from_ymd_opt(year, month, day)
-            .ok_or_else(|| anyhow::anyhow!("Invalid date: {}-{}-{}", year, month, day))?;
+            .ok_or_else(|| anyhow::anyhow!("Invalid date: {year}-{month}-{day}"))?;
         let time = NaiveTime::from_hms_opt(hour, minute, 0)
-            .ok_or_else(|| anyhow::anyhow!("Invalid time: {}:{}", hour, minute))?;
+            .ok_or_else(|| anyhow::anyhow!("Invalid time: {hour}:{minute}"))?;
         let naive = NaiveDateTime::new(date, time);
 
         // Convert to UTC (assuming partition times are in UTC for now)
@@ -643,7 +643,7 @@ impl ParquetSource {
                         .operator
                         .stat(path)
                         .await
-                        .with_context(|| format!("Failed to stat {}", path))?;
+                        .with_context(|| format!("Failed to stat {path}"))?;
                     stat.content_length()
                 };
 
@@ -673,7 +673,7 @@ impl ParquetSource {
             .lister_with(partition_path)
             .recursive(false)
             .await
-            .with_context(|| format!("Failed to list partition: {}", partition_path))?
+            .with_context(|| format!("Failed to list partition: {partition_path}"))?
             .try_collect()
             .await?;
 
@@ -713,11 +713,11 @@ impl ParquetSource {
             .read_with(path)
             .range(footer_size_start..file_size)
             .await
-            .with_context(|| format!("Failed to read footer suffix from {}", path))?
+            .with_context(|| format!("Failed to read footer suffix from {path}"))?
             .to_vec();
 
         if suffix_bytes.len() < 8 {
-            anyhow::bail!("File too small to be valid parquet: {}", path);
+            anyhow::bail!("File too small to be valid parquet: {path}");
         }
 
         // Parse footer length (4 bytes before magic)
@@ -731,11 +731,7 @@ impl ParquetSource {
         // Sanity check footer size
         let total_footer_size = footer_len + 8; // metadata + footer_len + magic
         if total_footer_size > file_size || total_footer_size > PARQUET_FOOTER_MAX_SIZE {
-            anyhow::bail!(
-                "Invalid or too large footer size {} in file {}",
-                footer_len,
-                path
-            );
+            anyhow::bail!("Invalid or too large footer size {footer_len} in file {path}");
         }
 
         // Read the full footer
@@ -745,13 +741,13 @@ impl ParquetSource {
             .read_with(path)
             .range(footer_start..file_size)
             .await
-            .with_context(|| format!("Failed to read footer from {}", path))?
+            .with_context(|| format!("Failed to read footer from {path}"))?
             .to_vec();
 
         // Parse metadata from footer bytes
         let metadata = ParquetMetaDataReader::new()
             .parse_and_finish(&Bytes::from(footer_bytes))
-            .with_context(|| format!("Failed to parse parquet metadata from {}", path))?;
+            .with_context(|| format!("Failed to parse parquet metadata from {path}"))?;
 
         let schema = parquet_to_arrow_schema(metadata.file_metadata().schema_descr(), None)
             .context("Failed to convert parquet schema to arrow")?;
@@ -765,7 +761,7 @@ impl ParquetSource {
             .operator
             .read(path)
             .await
-            .with_context(|| format!("Failed to read {}", path))?
+            .with_context(|| format!("Failed to read {path}"))?
             .to_vec();
 
         let metadata = ParquetMetaDataReader::new()
@@ -1055,7 +1051,7 @@ mod tests {
         // The result depends on current time - in a real scenario we'd mock time
         // But we can verify the function runs without error
         let filtered = result.unwrap();
-        println!("Filtered partitions: {:?}", filtered);
+        println!("Filtered partitions: {filtered:?}");
 
         // At minimum, very old partitions should be filtered out
         // and very recent ones too (depending on when test runs)

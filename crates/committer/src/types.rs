@@ -55,10 +55,9 @@ impl CommitContext {
             new_sequence_number: current_seq + 1,
             parent_snapshot_id,
             commit_uuid,
-            manifest_path: format!("{}/metadata/{}-m0.avro", table_location, commit_uuid),
+            manifest_path: format!("{table_location}/metadata/{commit_uuid}-m0.avro"),
             manifest_list_path: format!(
-                "{}/metadata/snap-{}-0-{}.avro",
-                table_location, new_snapshot_id, commit_uuid
+                "{table_location}/metadata/snap-{new_snapshot_id}-0-{commit_uuid}.avro"
             ),
         }
     }

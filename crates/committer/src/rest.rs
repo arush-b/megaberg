@@ -277,11 +277,7 @@ impl RestCommitter {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "REST catalog commit failed with status {}: {}",
-                status,
-                body
-            );
+            anyhow::bail!("REST catalog commit failed with status {status}: {body}");
         }
 
         let _commit_response: CommitTableResponse = response

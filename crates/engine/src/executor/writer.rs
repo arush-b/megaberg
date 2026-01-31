@@ -164,12 +164,12 @@ fn collect_field_ids(field: &Field, parent_path: &str, map: &mut HashMap<String,
         }
         arrow::datatypes::DataType::List(inner) | arrow::datatypes::DataType::LargeList(inner) => {
             // Parquet uses "list.element" for list elements
-            let list_path = format!("{}.list", current_path);
+            let list_path = format!("{current_path}.list");
             collect_field_ids(inner, &list_path, map);
         }
         arrow::datatypes::DataType::Map(entries, _) => {
             // Parquet uses "key_value.key" and "key_value.value" for map entries
-            let kv_path = format!("{}.key_value", current_path);
+            let kv_path = format!("{current_path}.key_value");
             collect_field_ids(entries, &kv_path, map);
         }
         _ => {}
