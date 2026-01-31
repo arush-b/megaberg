@@ -98,7 +98,7 @@ pub async fn write_parquet_file(
     let file_path = format!("{}/data/{}/{}", table_prefix, partition_path, file_name);
 
     // 3. Write
-    let mut writer = operator
+    let writer = operator
         .writer(&file_path)
         .await
         .context("Failed to create writer")?;

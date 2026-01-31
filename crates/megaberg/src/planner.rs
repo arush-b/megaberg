@@ -4,7 +4,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use arrow::datatypes::SchemaRef;
-use engine::planner::{build_tasks, pack_files, CompactionTask, PackerConfig, TableSink, TableSource};
+use engine::planner::{
+    build_tasks, pack_files, CompactionTask, PackerConfig, TableSink, TableSource,
+};
 use tracing::info;
 
 use crate::configs::AppConfig;
@@ -38,7 +40,10 @@ pub async fn plan(
 
     // Discover files (via trait)
     info!("Discovering files...");
-    let partition_map = source.discover().await.context("Failed to discover files")?;
+    let partition_map = source
+        .discover()
+        .await
+        .context("Failed to discover files")?;
 
     let total_files: usize = partition_map.values().map(|v| v.len()).sum();
     let total_bytes: u64 = partition_map

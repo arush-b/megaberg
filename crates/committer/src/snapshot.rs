@@ -10,10 +10,17 @@ use crate::types::{CommitContext, DataFileInfo};
 pub fn build_summary(added_files: &[DataFileInfo]) -> HashMap<String, String> {
     let mut props = HashMap::new();
     props.insert("commit.operation".to_string(), "append".to_string());
-    props.insert("added-data-files".to_string(), added_files.len().to_string());
+    props.insert(
+        "added-data-files".to_string(),
+        added_files.len().to_string(),
+    );
     props.insert(
         "added-records".to_string(),
-        added_files.iter().map(|f| f.record_count).sum::<u64>().to_string(),
+        added_files
+            .iter()
+            .map(|f| f.record_count)
+            .sum::<u64>()
+            .to_string(),
     );
     props
 }

@@ -444,18 +444,6 @@ impl ConfigFile {
 mod tests {
     use super::*;
 
-    /// Helper to create a minimal S3 config for tests
-    fn test_s3_config() -> S3ConfigFile {
-        S3ConfigFile {
-            endpoint: "http://localhost:9000".to_string(),
-            access_key: Some("admin".to_string()),
-            secret_key: Some("password".to_string()),
-            bucket: "test-bucket".to_string(),
-            region: "us-east-1".to_string(),
-            use_default_credentials: false,
-        }
-    }
-
     // ========================================================================
     // Parquet source tests
     // ========================================================================
@@ -479,7 +467,10 @@ mod tests {
         let app_config = config.into_app_config().unwrap();
 
         // Source should be Parquet
-        assert!(matches!(app_config.source.location, TableLocation::Parquet { .. }));
+        assert!(matches!(
+            app_config.source.location,
+            TableLocation::Parquet { .. }
+        ));
 
         // Sink should equal source location
         assert_eq!(app_config.source.location, app_config.sink);
@@ -560,13 +551,21 @@ mod tests {
         let app_config = config.into_app_config().unwrap();
 
         // Source should be Parquet
-        assert!(matches!(app_config.source.location, TableLocation::Parquet { .. }));
+        assert!(matches!(
+            app_config.source.location,
+            TableLocation::Parquet { .. }
+        ));
 
         // Sink should be Iceberg
         assert!(matches!(app_config.sink, TableLocation::Iceberg { .. }));
 
         // Verify Iceberg sink details
-        if let TableLocation::Iceberg { catalog, namespace, table } = &app_config.sink {
+        if let TableLocation::Iceberg {
+            catalog,
+            namespace,
+            table,
+        } = &app_config.sink
+        {
             assert_eq!(namespace, "analytics");
             assert_eq!(table, "events");
             assert!(matches!(catalog, CatalogConfig::Glue { .. }));
@@ -611,8 +610,17 @@ mod tests {
         assert_eq!(tw.partition_spec.fields.len(), 2);
         assert_eq!(tw.partition_spec.fields[0].name, "dt");
         assert_eq!(tw.partition_spec.fields[1].name, "hour");
-        assert!(matches!(tw.partition_spec.granularity, PartitionGranularity::Hour));
-        assert!(matches!(tw.lookback, LookbackWindow::Duration { hours: 5, minutes: 0 }));
+        assert!(matches!(
+            tw.partition_spec.granularity,
+            PartitionGranularity::Hour
+        ));
+        assert!(matches!(
+            tw.lookback,
+            LookbackWindow::Duration {
+                hours: 5,
+                minutes: 0
+            }
+        ));
     }
 
     #[test]
@@ -644,8 +652,14 @@ mod tests {
 
         let tw = app_config.source.time_window.unwrap();
         assert_eq!(tw.skip_recent, 2);
-        assert!(matches!(tw.partition_spec.granularity, PartitionGranularity::Day));
-        assert!(matches!(tw.lookback, LookbackWindow::Partitions { count: 7 }));
+        assert!(matches!(
+            tw.partition_spec.granularity,
+            PartitionGranularity::Day
+        ));
+        assert!(matches!(
+            tw.lookback,
+            LookbackWindow::Partitions { count: 7 }
+        ));
     }
 
     // ========================================================================
@@ -678,7 +692,10 @@ mod tests {
         assert_eq!(app_config.source.location, app_config.sink);
 
         // Verify both are Iceberg with same details
-        if let TableLocation::Iceberg { namespace, table, .. } = &app_config.source.location {
+        if let TableLocation::Iceberg {
+            namespace, table, ..
+        } = &app_config.source.location
+        {
             assert_eq!(namespace, "analytics");
             assert_eq!(table, "events");
         } else {
@@ -721,7 +738,10 @@ mod tests {
         assert_ne!(app_config.source.location, app_config.sink);
 
         // Verify source
-        if let TableLocation::Iceberg { namespace, table, .. } = &app_config.source.location {
+        if let TableLocation::Iceberg {
+            namespace, table, ..
+        } = &app_config.source.location
+        {
             assert_eq!(namespace, "raw");
             assert_eq!(table, "events_raw");
         } else {
@@ -729,7 +749,10 @@ mod tests {
         }
 
         // Verify sink
-        if let TableLocation::Iceberg { namespace, table, .. } = &app_config.sink {
+        if let TableLocation::Iceberg {
+            namespace, table, ..
+        } = &app_config.sink
+        {
             assert_eq!(namespace, "analytics");
             assert_eq!(table, "events_compacted");
         } else {
@@ -764,7 +787,10 @@ mod tests {
         let app_config = config.into_app_config().unwrap();
 
         // Source should be Iceberg
-        assert!(matches!(app_config.source.location, TableLocation::Iceberg { .. }));
+        assert!(matches!(
+            app_config.source.location,
+            TableLocation::Iceberg { .. }
+        ));
 
         // Sink should be Parquet
         assert!(matches!(app_config.sink, TableLocation::Parquet { .. }));
@@ -803,10 +829,17 @@ mod tests {
         let app_config = config.into_app_config().unwrap();
 
         if let TableLocation::Iceberg { catalog, .. } = &app_config.source.location {
-            if let CatalogConfig::Rest { uri, warehouse, props } = catalog {
+            if let CatalogConfig::Rest {
+                uri,
+                warehouse,
+                props,
+            } = catalog
+            {
                 assert_eq!(uri, "http://localhost:8181");
                 assert_eq!(warehouse.as_deref(), Some("s3://lakehouse/"));
-                assert!(props.is_empty());
+                // Props now contain S3 configuration passed to iceberg-rust
+                assert!(props.contains_key("s3.endpoint"));
+                assert!(props.contains_key("s3.region"));
             } else {
                 panic!("Expected REST catalog");
             }
@@ -840,7 +873,13 @@ mod tests {
         let app_config = config.into_app_config().unwrap();
 
         if let TableLocation::Iceberg { catalog, .. } = &app_config.source.location {
-            if let CatalogConfig::Glue { warehouse, catalog_id, region, props } = catalog {
+            if let CatalogConfig::Glue {
+                warehouse,
+                catalog_id,
+                region,
+                props,
+            } = catalog
+            {
                 assert_eq!(warehouse, "s3://lakehouse/");
                 assert_eq!(catalog_id.as_deref(), Some("123456789012"));
                 assert_eq!(region.as_deref(), Some("us-west-2"));
@@ -999,7 +1038,10 @@ mod tests {
         assert_eq!(tw.partition_spec.timezone, "UTC");
 
         // granularity should default to Hour
-        assert!(matches!(tw.partition_spec.granularity, PartitionGranularity::Hour));
+        assert!(matches!(
+            tw.partition_spec.granularity,
+            PartitionGranularity::Hour
+        ));
     }
 
     // ========================================================================

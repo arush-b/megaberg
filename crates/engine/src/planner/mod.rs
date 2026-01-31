@@ -9,8 +9,17 @@ pub use task_builder::{build_tasks, CompactionTask};
 
 // Re-export table traits and implementations
 pub use table::{
-    CatalogConfig, CommitResult, IcebergTable, ParquetSource, TableSink, TableSource,
+    CatalogConfig,
+    CommitResult,
+    IcebergTable,
+    LookbackWindow,
+    ParquetSource,
+    PartitionGranularity,
+    PartitionTimeField,
+    PartitionTimeSpec,
+    TableSink,
+    TableSource,
+    TimeComponent,
     // Time window types for observability compaction
-    TimeWindowConfig, PartitionTimeSpec, PartitionTimeField,
-    TimeComponent, PartitionGranularity, LookbackWindow,
+    TimeWindowConfig,
 };

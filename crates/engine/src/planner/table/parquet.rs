@@ -369,6 +369,7 @@ impl ParquetSource {
     }
 
     /// Filter partitions to only those within the time window.
+    #[allow(dead_code)]
     fn filter_partitions_by_time(
         &self,
         partitions: Vec<String>,
@@ -435,6 +436,7 @@ impl ParquetSource {
     /// Parse partition path to extract timestamp.
     ///
     /// E.g., "dt=2024-01-15/hour=14" -> 2024-01-15 14:00:00 UTC
+    #[allow(dead_code)]
     fn parse_partition_time(
         &self,
         partition_key: &str,
@@ -548,7 +550,7 @@ impl ParquetSource {
         // Move to first complete partition after cutoff
         // (if cutoff is not on a boundary, the partition containing it might be too old)
         if current < cutoff {
-            current = current + granularity.duration();
+            current += granularity.duration();
         }
 
         while current < skip_after {
@@ -556,7 +558,7 @@ impl ParquetSource {
             let full_path = format!("{}{}/", self.base_path, partition_key);
             prefixes.push(full_path);
 
-            current = current + granularity.duration();
+            current += granularity.duration();
         }
 
         debug!(
@@ -596,6 +598,7 @@ impl ParquetSource {
     /// Extract key=value pairs from a partition path.
     ///
     /// E.g., "dt=2024-01-15/hour=14" -> {"dt": "2024-01-15", "hour": "14"}
+    #[allow(dead_code)]
     fn extract_partition_values(partition_key: &str) -> HashMap<String, String> {
         let mut values = HashMap::new();
 
@@ -1550,7 +1553,7 @@ mod tests {
 
         let prefixes = source.generate_time_window_prefixes(&config);
         // Due to boundary alignment, we might get 1-2 partitions
-        assert!(prefixes.len() >= 1, "Should have at least 1 partition");
+        assert!(!prefixes.is_empty(), "Should have at least 1 partition");
         assert!(prefixes.len() <= 2, "Should have at most 2 partitions");
     }
 

@@ -1,0 +1,53 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          components: clippy, rustfmt
+          toolchain: 1.82
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "megaberg-build"
+          cache-on-failure: true
+
+      - name: Check Formatting
+        run: cargo fmt -- --check
+
+      - name: Install dependencies
+        run: |
+          curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ${CARGO_HOME:-~/.cargo}/bin
+          sudo apt-get update
+          sudo apt-get install -y cmake clang
+
+      - name: Install CI tools
+        run: |
+          cargo install cargo-audit@0.21.2 --locked
+          cargo install cargo-machete --locked
+
+      - name: Build
+        run: cargo build --all-features
+
+      - name: Run Clippy
+        run: cargo clippy --all-features --all-targets --workspace -- -D warnings
+
+      - name: Test
+        run: cargo nextest run --all-features
+
+      - name: Security Audit
+        run: cargo audit
+
+      - name: Check Unused Dependencies
+        run: cargo machete
+        continue-on-error: true

@@ -39,19 +39,26 @@ struct CommitTableRequest {
 /// Table requirement for optimistic concurrency.
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
+#[allow(clippy::enum_variant_names, dead_code)]
 enum TableRequirement {
-    AssertCurrentSchemaId { #[serde(rename = "current-schema-id")] current_schema_id: i32 },
-    AssertTableUuid { uuid: String },
+    AssertCurrentSchemaId {
+        #[serde(rename = "current-schema-id")]
+        current_schema_id: i32,
+    },
+    AssertTableUuid {
+        uuid: String,
+    },
     AssertRefSnapshotId {
         #[serde(rename = "ref")]
         ref_name: String,
         #[serde(rename = "snapshot-id")]
-        snapshot_id: Option<i64>
+        snapshot_id: Option<i64>,
     },
 }
 
 /// REST API commit response.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct CommitTableResponse {
     #[serde(rename = "metadata-location")]
     metadata_location: Option<String>,
@@ -211,11 +218,7 @@ impl RestCommitter {
 
     /// Update REST catalog's table via REST API.
     /// Server receives TableUpdates and handles metadata.json writing internally.
-    async fn update_rest_table(
-        &self,
-        table: &Table,
-        updates: &[TableUpdate],
-    ) -> Result<()> {
+    async fn update_rest_table(&self, table: &Table, updates: &[TableUpdate]) -> Result<()> {
         let ns = table.identifier().namespace().to_string();
         let name = table.identifier().name().to_string();
         let metadata = table.metadata();
@@ -253,10 +256,19 @@ impl RestCommitter {
 
         tracing::debug!(url = %url, "Committing to REST catalog");
 
-        let response = self
+        // Build request with headers from props (e.g., "header.Authorization" -> "Authorization: value")
+        let mut request_builder = self
             .client
             .post(&url)
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+
+        for (key, value) in &self.config.props {
+            if let Some(header_name) = key.strip_prefix("header.") {
+                request_builder = request_builder.header(header_name, value);
+            }
+        }
+
+        let response = request_builder
             .json(&request)
             .send()
             .await
@@ -289,7 +301,9 @@ impl RestCommitter {
                 let mut summary = serde_json::Map::new();
                 summary.insert(
                     "operation".to_string(),
-                    serde_json::Value::String(format!("{:?}", snapshot.summary().operation).to_lowercase()),
+                    serde_json::Value::String(
+                        format!("{:?}", snapshot.summary().operation).to_lowercase(),
+                    ),
                 );
                 for (k, v) in &snapshot.summary().additional_properties {
                     summary.insert(k.clone(), serde_json::Value::String(v.clone()));
@@ -308,14 +322,15 @@ impl RestCommitter {
                     }
                 }))
             }
-            TableUpdate::SetSnapshotRef { ref_name, reference } => {
-                Ok(serde_json::json!({
-                    "action": "set-snapshot-ref",
-                    "ref-name": ref_name,
-                    "snapshot-id": reference.snapshot_id,
-                    "type": "branch"
-                }))
-            }
+            TableUpdate::SetSnapshotRef {
+                ref_name,
+                reference,
+            } => Ok(serde_json::json!({
+                "action": "set-snapshot-ref",
+                "ref-name": ref_name,
+                "snapshot-id": reference.snapshot_id,
+                "type": "branch"
+            })),
             _ => anyhow::bail!("Unsupported table update type for REST commit"),
         }
     }

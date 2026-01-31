@@ -57,8 +57,8 @@ fn create_parquet_bytes(partition_id: i32, file_id: i32) -> Vec<u8> {
     .expect("Failed to create record batch");
 
     let mut buf = Vec::new();
-    let mut writer = ArrowWriter::try_new(&mut buf, schema, None)
-        .expect("Failed to create parquet writer");
+    let mut writer =
+        ArrowWriter::try_new(&mut buf, schema, None).expect("Failed to create parquet writer");
     writer.write(&batch).expect("Failed to write batch");
     writer.close().expect("Failed to close writer");
 
@@ -82,21 +82,24 @@ async fn create_test_files(operator: &Operator) {
             operator
                 .write(&file_path, Bytes::from(parquet_bytes))
                 .await
-                .expect(&format!("Failed to write {}", file_path));
+                .unwrap_or_else(|_| panic!("Failed to write {}", file_path));
         }
 
-        println!("  Created partition {}/10: {}", partition_id + 1, partition_path);
+        println!(
+            "  Created partition {}/10: {}",
+            partition_id + 1,
+            partition_path
+        );
     }
 
     println!("Done creating files!");
 }
 
 #[tokio::test]
+#[ignore = "requires local MinIO"]
 async fn test_parquet_discovery_and_planning() {
     // Initialize tracing for debug output
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .try_init();
+    let _ = tracing_subscriber::fmt().with_env_filter("info").try_init();
 
     // Create operator pointing to MinIO
     let operator = create_minio_operator();
@@ -122,8 +125,7 @@ async fn test_parquet_discovery_and_planning() {
     let total_files: usize = partition_map.values().map(|v| v.len()).sum();
     println!(
         "Discovered: {} partitions, {} total files",
-        partition_count,
-        total_files
+        partition_count, total_files
     );
 
     // Step 3: Pack files into groups
@@ -139,7 +141,10 @@ async fn test_parquet_discovery_and_planning() {
     for (i, group) in file_groups.iter().enumerate() {
         println!(
             "  Group {}: partition='{}', {} files, {} bytes",
-            i, group.partition, group.files.len(), group.total_bytes
+            i,
+            group.partition,
+            group.files.len(),
+            group.total_bytes
         );
     }
 
@@ -165,7 +170,11 @@ async fn test_parquet_discovery_and_planning() {
     assert_eq!(tasks.len(), 10, "Expected 10 compaction tasks");
 
     for task in &tasks {
-        assert_eq!(task.input_files.len(), 100, "Expected 100 input files per task");
+        assert_eq!(
+            task.input_files.len(),
+            100,
+            "Expected 100 input files per task"
+        );
     }
 
     println!("\n=== Test Passed ===");

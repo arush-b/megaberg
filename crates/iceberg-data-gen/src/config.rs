@@ -44,10 +44,20 @@ pub struct TableConfig {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct FileGroup {
+    /// File size in KB for this group
+    pub size_kb: usize,
+    /// Number of files to generate in this group
+    pub count: usize,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct GenerateConfig {
+    /// Total size in MB (used when file_groups is not specified)
     #[serde(default = "default_total_size_mb")]
     pub total_size_mb: usize,
+    /// File size in KB (used when file_groups is not specified)
     #[serde(default = "default_file_size_kb")]
     pub file_size_kb: usize,
     #[serde(default = "default_parallelism")]
@@ -57,6 +67,10 @@ pub struct GenerateConfig {
     /// Partition cardinality settings
     #[serde(default)]
     pub partitions: PartitionConfig,
+    /// Optional file groups for mixed-size generation.
+    /// When specified, total_size_mb and file_size_kb are ignored.
+    #[serde(default)]
+    pub file_groups: Option<Vec<FileGroup>>,
 }
 
 #[derive(Debug, Deserialize)]

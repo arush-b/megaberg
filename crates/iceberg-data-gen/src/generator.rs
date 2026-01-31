@@ -124,7 +124,13 @@ impl Generator {
 
         // 7. Explain Analyse Output (String - Optional)
         let explains: Vec<Option<String>> = (0..rows)
-            .map(|_| Some(format!("Seq Scan on table (cost=0.00..{:.2} rows={} width=100)", rng.gen_range(10.0..1000.0), rng.gen_range(100..10000))))
+            .map(|_| {
+                Some(format!(
+                    "Seq Scan on table (cost=0.00..{:.2} rows={} width=100)",
+                    rng.gen_range(10.0..1000.0),
+                    rng.gen_range(100..10000)
+                ))
+            })
             .collect();
 
         // 8. Execution Time (Double - Optional)
@@ -152,28 +158,56 @@ impl Generator {
         let batch = RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(StringArray::from(cluster_arr)),              // cluster_name (1)
-                Arc::new(StringArray::from(query_ids)),                // query_id (2)
-                Arc::new(StringArray::from(catalogs)),                 // catalog (3)
-                Arc::new(StringArray::from(queries)),                  // query (4)
-                Arc::new(Int64Array::from(end_times)),                 // end_time (5)
-                Arc::new(BooleanArray::from(is_cached)),               // is_cached (6)
-                Arc::new(StringArray::from(explains)),                 // explain_analyse_output (7)
-                Arc::new(Float64Array::from(exec_times)),              // execution_time (8)
-                Arc::new(StringArray::from(ws_arr)),                   // workspace_id (9)
-                Arc::new(StringArray::from(query_hashes)),             // query_hash (10)
+                Arc::new(StringArray::from(cluster_arr)), // cluster_name (1)
+                Arc::new(StringArray::from(query_ids)),   // query_id (2)
+                Arc::new(StringArray::from(catalogs)),    // catalog (3)
+                Arc::new(StringArray::from(queries)),     // query (4)
+                Arc::new(Int64Array::from(end_times)),    // end_time (5)
+                Arc::new(BooleanArray::from(is_cached)),  // is_cached (6)
+                Arc::new(StringArray::from(explains)),    // explain_analyse_output (7)
+                Arc::new(Float64Array::from(exec_times)), // execution_time (8)
+                Arc::new(StringArray::from(ws_arr)),      // workspace_id (9)
+                Arc::new(StringArray::from(query_hashes)), // query_hash (10)
                 Arc::new(TimestampMicrosecondArray::from(start_times).with_timezone("UTC")), // start_time (11)
-                Arc::new(StringArray::from(vec![Some("default_db".to_string()); rows])), // database (12)
-                Arc::new(Float64Array::from((0..rows).map(|_| Some(rng.gen_range(10.0..500.0))).collect::<Vec<_>>())), // client_perceived_time (13)
-                Arc::new(Float64Array::from((0..rows).map(|_| Some(rng.gen_range(0.1..5.0))).collect::<Vec<_>>())),   // parsing_time (14)
-                Arc::new(StringArray::from(vec![Some(Alphanumeric.sample_string(&mut rng, 32)); rows])), // cluster_uuid (15)
-                Arc::new(Float64Array::from((0..rows).map(|_| Some(rng.gen_range(0.0..10.0))).collect::<Vec<_>>())),   // queueing_time (16)
-                Arc::new(StringArray::from(alias_arr)),                  // alias (17)
-                Arc::new(StringArray::from((0..rows).map(|_| Some(format!("user{}@example.com", rng.gen_range(1..100)))).collect::<Vec<_>>())), // email (18)
-                Arc::new(StringArray::from((0..rows).map(|_| {
-                    let statuses = ["COMPLETED", "FAILED", "RUNNING", "QUEUED"];
-                    Some(statuses[rng.gen_range(0..statuses.len())].to_string())
-                }).collect::<Vec<_>>())), // status (19)
+                Arc::new(StringArray::from(vec![
+                    Some("default_db".to_string());
+                    rows
+                ])), // database (12)
+                Arc::new(Float64Array::from(
+                    (0..rows)
+                        .map(|_| Some(rng.gen_range(10.0..500.0)))
+                        .collect::<Vec<_>>(),
+                )), // client_perceived_time (13)
+                Arc::new(Float64Array::from(
+                    (0..rows)
+                        .map(|_| Some(rng.gen_range(0.1..5.0)))
+                        .collect::<Vec<_>>(),
+                )), // parsing_time (14)
+                Arc::new(StringArray::from(vec![
+                    Some(
+                        Alphanumeric.sample_string(&mut rng, 32)
+                    );
+                    rows
+                ])), // cluster_uuid (15)
+                Arc::new(Float64Array::from(
+                    (0..rows)
+                        .map(|_| Some(rng.gen_range(0.0..10.0)))
+                        .collect::<Vec<_>>(),
+                )), // queueing_time (16)
+                Arc::new(StringArray::from(alias_arr)), // alias (17)
+                Arc::new(StringArray::from(
+                    (0..rows)
+                        .map(|_| Some(format!("user{}@example.com", rng.gen_range(1..100))))
+                        .collect::<Vec<_>>(),
+                )), // email (18)
+                Arc::new(StringArray::from(
+                    (0..rows)
+                        .map(|_| {
+                            let statuses = ["COMPLETED", "FAILED", "RUNNING", "QUEUED"];
+                            Some(statuses[rng.gen_range(0..statuses.len())].to_string())
+                        })
+                        .collect::<Vec<_>>(),
+                )), // status (19)
             ],
         )?;
 

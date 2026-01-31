@@ -57,7 +57,7 @@ fn parse_partition_value(value: &str) -> Literal {
         return Literal::Primitive(PrimitiveLiteral::Long(i));
     }
     Literal::Primitive(PrimitiveLiteral::String(value.to_string()))
-} 
+}
 
 /// Write a new manifest with added files.
 pub async fn write_manifest(
@@ -128,7 +128,10 @@ pub async fn write_delete_manifest(
     // Use a different manifest path for deletes
     let delete_manifest_path = format!(
         "{}/metadata/{}-m1.avro",
-        ctx.manifest_path.rsplit_once("/metadata/").map(|(loc, _)| loc).unwrap_or(""),
+        ctx.manifest_path
+            .rsplit_once("/metadata/")
+            .map(|(loc, _)| loc)
+            .unwrap_or(""),
         ctx.commit_uuid
     );
 
@@ -206,7 +209,10 @@ pub async fn write_manifest_list(
         .add_manifests(all_manifests.into_iter())
         .context("Failed to add manifests")?;
 
-    writer.close().await.context("Failed to write manifest list")?;
+    writer
+        .close()
+        .await
+        .context("Failed to write manifest list")?;
 
     tracing::debug!(path = %ctx.manifest_list_path, "Wrote manifest list");
     Ok(())
@@ -383,7 +389,12 @@ pub async fn rewrite_manifest_keeping(
         let seq_num = entry.sequence_number().unwrap_or(1);
         let file_seq_num = entry.file_sequence_number.unwrap_or(seq_num);
         writer
-            .add_existing_file(entry.data_file().clone(), snapshot_id, seq_num, Some(file_seq_num))
+            .add_existing_file(
+                entry.data_file().clone(),
+                snapshot_id,
+                seq_num,
+                Some(file_seq_num),
+            )
             .context("Failed to add existing file to rewritten manifest")?;
     }
 
@@ -520,9 +531,8 @@ mod tests {
         let result = build_partition(&spec, &Some(values));
 
         // Only year should be in result, extras are ignored
-        let expected = Struct::from_iter(vec![Some(Literal::Primitive(PrimitiveLiteral::Int(
-            2024,
-        )))]);
+        let expected =
+            Struct::from_iter(vec![Some(Literal::Primitive(PrimitiveLiteral::Int(2024)))]);
         assert_eq!(result, expected);
     }
 
@@ -669,14 +679,9 @@ mod tests {
                 .new_output(path)
                 .expect("Failed to create output file");
 
-            let mut writer = ManifestWriterBuilder::new(
-                output,
-                Some(snapshot_id),
-                None,
-                schema,
-                partition_spec,
-            )
-            .build_v2_data();
+            let mut writer =
+                ManifestWriterBuilder::new(output, Some(snapshot_id), None, schema, partition_spec)
+                    .build_v2_data();
 
             for file_path in file_paths {
                 let data_file = test_data_file(file_path);
@@ -915,10 +920,7 @@ mod tests {
                 "memory://test/manifest3.avro",
                 schema,
                 partition_spec,
-                &[
-                    "s3://bucket/remove2.parquet",
-                    "s3://bucket/remove3.parquet",
-                ],
+                &["s3://bucket/remove2.parquet", "s3://bucket/remove3.parquet"],
                 1,
             )
             .await;
@@ -928,10 +930,13 @@ mod tests {
             removed_paths.insert("s3://bucket/remove2.parquet".to_string());
             removed_paths.insert("s3://bucket/remove3.parquet".to_string());
 
-            let result =
-                filter_manifests(&file_io, vec![manifest1, manifest2, manifest3], &removed_paths)
-                    .await
-                    .expect("filter_manifests should succeed");
+            let result = filter_manifests(
+                &file_io,
+                vec![manifest1, manifest2, manifest3],
+                &removed_paths,
+            )
+            .await
+            .expect("filter_manifests should succeed");
 
             // Manifest 1 -> unaffected, Manifest 2 -> to_rewrite, Manifest 3 -> dropped
             assert_eq!(result.unaffected.len(), 1);
@@ -1043,14 +1048,9 @@ mod tests {
                 .new_output(path)
                 .expect("Failed to create output file");
 
-            let mut writer = ManifestWriterBuilder::new(
-                output,
-                Some(snapshot_id),
-                None,
-                schema,
-                partition_spec,
-            )
-            .build_v2_data();
+            let mut writer =
+                ManifestWriterBuilder::new(output, Some(snapshot_id), None, schema, partition_spec)
+                    .build_v2_data();
 
             for file_path in file_paths {
                 let data_file = test_data_file(file_path);
@@ -1492,7 +1492,10 @@ mod tests {
                 .expect("Should load manifest");
 
             // Partition should be empty for unpartitioned tables
-            assert_eq!(*loaded.entries()[0].data_file().partition(), Struct::empty());
+            assert_eq!(
+                *loaded.entries()[0].data_file().partition(),
+                Struct::empty()
+            );
         }
     }
 
@@ -1731,14 +1734,9 @@ mod tests {
                 .new_output(path)
                 .expect("Failed to create output file");
 
-            let mut writer = ManifestWriterBuilder::new(
-                output,
-                Some(snapshot_id),
-                None,
-                schema,
-                partition_spec,
-            )
-            .build_v2_data();
+            let mut writer =
+                ManifestWriterBuilder::new(output, Some(snapshot_id), None, schema, partition_spec)
+                    .build_v2_data();
 
             for file_path in file_paths {
                 let data_file = test_data_file(file_path);

@@ -57,6 +57,7 @@ fn create_test_parquet() -> Bytes {
 }
 
 #[tokio::test]
+#[ignore = "requires local MinIO"]
 async fn test_time_window_filtering_with_minio() {
     // Setup
     let operator = create_minio_operator();
@@ -85,7 +86,10 @@ async fn test_time_window_filtering_with_minio() {
         let partition_path = format!("{}dt={}/hour={:02}/", base_path, dt, hour);
         let file_path = format!("{}test.parquet", partition_path);
 
-        operator.write(&file_path, parquet_data.clone()).await.unwrap();
+        operator
+            .write(&file_path, parquet_data.clone())
+            .await
+            .unwrap();
         created_partitions.push((partition_path.clone(), *offset));
         println!("  Created: {} (offset: {}h)", partition_path, offset);
     }
@@ -111,7 +115,10 @@ async fn test_time_window_filtering_with_minio() {
             timezone: "UTC".to_string(),
             granularity: PartitionGranularity::Hour,
         },
-        lookback: LookbackWindow::Duration { hours: 5, minutes: 0 },
+        lookback: LookbackWindow::Duration {
+            hours: 5,
+            minutes: 0,
+        },
         skip_recent: 1,
     };
 
@@ -164,7 +171,10 @@ async fn test_time_window_filtering_with_minio() {
                 offset,
                 key
             );
-            println!("  [CORRECT] {} (offset {}h) was skipped (too old)", key, offset);
+            println!(
+                "  [CORRECT] {} (offset {}h) was skipped (too old)",
+                key, offset
+            );
         } else if *offset >= -1 {
             // Should be skipped (too recent - within skip_recent window)
             // -1h means hour=16 which is at 16:00, >= skip_after (16:00)
@@ -174,7 +184,10 @@ async fn test_time_window_filtering_with_minio() {
                 offset,
                 key
             );
-            println!("  [CORRECT] {} (offset {}h) was skipped (too recent)", key, offset);
+            println!(
+                "  [CORRECT] {} (offset {}h) was skipped (too recent)",
+                key, offset
+            );
         } else {
             // Should be included (-4, -3, -2)
             assert!(
@@ -194,6 +207,7 @@ async fn test_time_window_filtering_with_minio() {
 }
 
 #[tokio::test]
+#[ignore = "requires local MinIO"]
 async fn test_parquet_source_without_time_window() {
     // Verify that without time window, all partitions are discovered
     let operator = create_minio_operator();
@@ -214,7 +228,10 @@ async fn test_parquet_source_without_time_window() {
         let hour = ts.hour();
 
         let file_path = format!("{}dt={}/hour={:02}/test.parquet", base_path, dt, hour);
-        operator.write(&file_path, parquet_data.clone()).await.unwrap();
+        operator
+            .write(&file_path, parquet_data.clone())
+            .await
+            .unwrap();
     }
 
     // Create source WITHOUT time window
@@ -235,7 +252,10 @@ async fn test_parquet_source_without_time_window() {
         partition_map.len()
     );
 
-    println!("Without time window: found {} partitions as expected", partition_map.len());
+    println!(
+        "Without time window: found {} partitions as expected",
+        partition_map.len()
+    );
 
     // Cleanup
     let _ = operator.remove_all(base_path).await;

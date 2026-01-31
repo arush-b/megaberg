@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::config::CompactionConfig;
 use arrow::datatypes::{Field, Fields, Schema, SchemaRef};
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
@@ -13,7 +14,6 @@ use parquet::arrow::AsyncArrowWriter;
 use parquet::errors::ParquetError;
 use parquet::file::properties::WriterProperties;
 use parquet::format::FileMetaData;
-use super::config::CompactionConfig;
 
 /// Metadata key for Iceberg field IDs in Arrow schema.
 pub const PARQUET_FIELD_ID_META_KEY: &str = "PARQUET:field_id";

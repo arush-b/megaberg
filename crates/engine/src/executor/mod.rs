@@ -208,6 +208,8 @@ impl Executor {
     ///
     /// Returns raw channels instead of ExecutorHandle.
     /// Note: This leaks worker handles - prefer spawn() for production.
+    // #TODO - p1
+    // Analyze usage and remove if not required
     #[deprecated(since = "0.2.0", note = "Use spawn() which returns ExecutorHandle")]
     pub async fn spawn_legacy(
         self,

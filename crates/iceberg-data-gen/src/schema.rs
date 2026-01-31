@@ -14,7 +14,11 @@ pub fn get_arrow_schema() -> SchemaRef {
         Field::new("execution_time", DataType::Float64, true),
         Field::new("workspace_id", DataType::Utf8, false),
         Field::new("query_hash", DataType::Utf8, true),
-        Field::new("start_time", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), true),
+        Field::new(
+            "start_time",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
         Field::new("database", DataType::Utf8, true),
         Field::new("client_perceived_time", DataType::Float64, true),
         Field::new("parsing_time", DataType::Float64, true),
@@ -72,7 +76,8 @@ pub fn get_iceberg_schema() -> iceberg::spec::Schema {
                 .into(),
             NestedField::required(9, "workspace_id", Type::Primitive(PrimitiveType::String)).into(),
             NestedField::optional(10, "query_hash", Type::Primitive(PrimitiveType::String)).into(),
-            NestedField::optional(11, "start_time", Type::Primitive(PrimitiveType::Timestamp)).into(),
+            NestedField::optional(11, "start_time", Type::Primitive(PrimitiveType::Timestamp))
+                .into(),
             NestedField::optional(12, "database", Type::Primitive(PrimitiveType::String)).into(),
             NestedField::optional(
                 13,

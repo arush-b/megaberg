@@ -109,7 +109,7 @@ pub async fn run(
             );
 
             // Log progress periodically
-            if completed % 10 == 0 || completed == task_count {
+            if completed.is_multiple_of(10) || completed == task_count {
                 let metrics = handle.metrics().snapshot();
                 info!(
                     completed = metrics.tasks_completed,
@@ -142,6 +142,7 @@ pub async fn run(
 }
 
 /// Process a single task result.
+#[allow(clippy::too_many_arguments)]
 fn process_result(
     task_id: &str,
     input_files: Vec<String>,

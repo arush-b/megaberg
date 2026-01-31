@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use committer::{OutputFile, TaskResult};
+use committer::TaskResult;
 use tracing::{info, warn};
 
 use crate::configs::{AppConfig, ConfigFile};
@@ -145,7 +145,10 @@ fn print_summary(
         "Planning time:           {:>10.2} ms",
         planning_time.as_secs_f64() * 1000.0
     );
-    println!("Avg task compaction:     {:>10.2} s", avg_task_duration_secs);
+    println!(
+        "Avg task compaction:     {:>10.2} s",
+        avg_task_duration_secs
+    );
     println!(
         "Total compaction time:   {:>10.2} s",
         execution_time.as_secs_f64()

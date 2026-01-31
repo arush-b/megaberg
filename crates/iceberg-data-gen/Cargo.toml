@@ -3,6 +3,14 @@ name = "iceberg-data-gen"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "iceberg_data_gen"
+path = "src/lib.rs"
+
+[[bin]]
+name = "iceberg-data-gen"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { workspace = true, features = ["full", "macros"] }
 anyhow = { workspace = true }
@@ -24,3 +32,11 @@ opendal = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+testcontainers = "0.23"
+testcontainers-modules = { version = "0.11", features = ["minio"] }
+reqwest = { workspace = true }
+aws-sdk-s3 = "1"
+aws-config = "1"

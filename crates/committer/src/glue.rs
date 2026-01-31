@@ -23,8 +23,7 @@ pub struct GlueConfig {
 
 /// Glue catalog committer.
 pub struct GlueCommitter {
-    #[allow(dead_code)] // TODO: Use region from config in update_glue_table
-    config: GlueConfig,
+    pub config: GlueConfig,
 }
 
 impl GlueCommitter {
@@ -46,9 +45,8 @@ impl GlueCommitter {
             return Ok(0);
         }
 
-
-        // #TODO
-        // add intelligent logic to determine the need for append/replace 
+        // #TODO - p2 For raw parquet -> iceberg commits
+        // add intelligent logic to determine the need for append/replace
         // for committing by looking at added_files + removed_files in the commit request
 
         tracing::info!(
@@ -80,10 +78,9 @@ impl GlueCommitter {
 
         let mut new_manifests = Vec::new();
 
-        // #TODO - p1
+        // #TODO - p2 A part of metadata compaction
         // Combine manifests together that fall in the similar partition
-        // scheme. 
-
+        // scheme.
 
         // Write manifest for added files
         if !added_files.is_empty() {
@@ -164,7 +161,7 @@ impl GlueCommitter {
 
         // Build snapshot summary
 
-        // todo - Add delete file summary to summary props
+        // #TODO p0 - Add delete file summary to summary props
         let summary_props = build_summary(&added_files);
         let snapshot = build_snapshot(&ctx, metadata.current_schema().schema_id(), summary_props);
 
@@ -183,9 +180,15 @@ impl GlueCommitter {
         // Apply updates to build new metadata
         let mut builder = metadata.clone().into_builder(None);
         for update in &updates {
-            builder = update.clone().apply(builder).context("Failed to apply update")?;
+            builder = update
+                .clone()
+                .apply(builder)
+                .context("Failed to apply update")?;
         }
-        let new_metadata = builder.build().context("Failed to build metadata")?.metadata;
+        let new_metadata = builder
+            .build()
+            .context("Failed to build metadata")?
+            .metadata;
 
         // Write metadata.json
         let metadata_path = format!(
@@ -213,23 +216,34 @@ impl GlueCommitter {
         let ns = table.identifier().namespace().to_string();
         let name = table.identifier().name().to_string();
 
-        let aws_config = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
+        let aws_config = match &self.config.region {
+            Some(region) => {
+                aws_config::defaults(aws_config::BehaviorVersion::latest())
+                    .region(aws_config::Region::new(region.clone()))
+                    .load()
+                    .await
+            }
+            None => aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await,
+        };
         let glue_client = aws_sdk_glue::Client::new(&aws_config);
 
-        // Get current table to preserve properties
-        let current = glue_client
+        // Get current table to preserve properties and version for OCC
+        let get_response = glue_client
             .get_table()
             .database_name(&ns)
             .name(&name)
             .send()
             .await
-            .context("Failed to get Glue table")?
-            .table
-            .context("Table not found")?;
+            .context("Failed to get Glue table")?;
+        let current = get_response.table.context("Table not found")?;
+        let version_id = current.version_id.clone();
 
         // Update metadata_location
         let mut params = current.parameters().cloned().unwrap_or_default();
-        params.insert("metadata_location".to_string(), new_metadata_location.to_string());
+        params.insert(
+            "metadata_location".to_string(),
+            new_metadata_location.to_string(),
+        );
         if let Some(prev) = table.metadata_location() {
             params.insert("previous_metadata_location".to_string(), prev.to_string());
         }
@@ -242,14 +256,28 @@ impl GlueCommitter {
             .build()
             .context("Failed to build table input")?;
 
-        glue_client
+        let mut update_request = glue_client
             .update_table()
             .database_name(&ns)
             .table_input(table_input)
-            .skip_archive(true)
-            .send()
-            .await
-            .context("Failed to update Glue table")?;
+            .skip_archive(true);
+
+        // Use version_id for optimistic concurrency control
+        if let Some(vid) = version_id {
+            update_request = update_request.version_id(vid.to_string());
+        }
+
+        update_request.send().await.map_err(|e| {
+            // Check for version conflict (concurrent modification)
+            if let Some(service_err) = e.as_service_error() {
+                if service_err.is_concurrent_modification_exception() {
+                    return anyhow::anyhow!(
+                        "Commit conflict: table was modified by another process. Retry with fresh table state."
+                    );
+                }
+            }
+            anyhow::anyhow!("Failed to update Glue table: {}", e)
+        })?;
 
         tracing::debug!("Updated Glue metadata_location");
         Ok(())

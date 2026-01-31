@@ -130,11 +130,7 @@ impl IcebergTable {
     }
 
     /// Create from an existing iceberg-rust Table with Glue config.
-    pub fn from_table_with_glue(
-        table: Table,
-        warehouse: String,
-        region: Option<String>,
-    ) -> Self {
+    pub fn from_table_with_glue(table: Table, warehouse: String, region: Option<String>) -> Self {
         let glue_config = GlueConfig { warehouse, region };
         let committer = CatalogCommitter::Glue(GlueCommitter::new(glue_config));
 
@@ -330,7 +326,8 @@ impl IcebergTable {
             let partition_key = Self::format_partition_key(partition, partition_field_names);
 
             // Build partition values map for commit
-            let partition_values = Self::build_partition_values_map(partition, partition_field_names);
+            let partition_values =
+                Self::build_partition_values_map(partition, partition_field_names);
 
             entries.push((
                 partition_key,
@@ -445,9 +442,7 @@ impl IcebergTable {
         partition_key
             .split('/')
             .filter_map(|part| {
-                let mut parts = part.splitn(2, '=');
-                let key = parts.next()?;
-                let value = parts.next()?;
+                let (key, value) = part.split_once('=')?;
                 // Skip Hive null sentinel - let it be None in the HashMap
                 // so build_partition() will write null to the manifest
                 if value == Self::HIVE_DEFAULT_PARTITION {

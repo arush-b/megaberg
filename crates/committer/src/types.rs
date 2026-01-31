@@ -22,6 +22,7 @@ pub struct TaskResult {
 }
 
 /// Information about a data file for catalog commit.
+#[derive(Debug, Clone)]
 pub struct DataFileInfo {
     pub path: String,
     pub size_bytes: u64,

@@ -5,7 +5,6 @@ members = [
     "crates/engine",
     "crates/common",
     "crates/committer",
-    "crates/iceberg-data-gen",
 ]
 
 [workspace.package]
@@ -24,7 +23,6 @@ bytes = "1"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
 
 # Iceberg / Parquet
 apache-avro = "0.17"
@@ -37,7 +35,6 @@ iceberg-catalog-rest = "0.7"
 iceberg-catalog-glue = "0.7"
 
 # Storage (opendal for S3 access, object_store_opendal bridges to DataFusion)
-object_store = { version = "0.12", features = ["aws"] }
 opendal = { version = "0.55", features = ["services-s3"] }
 object_store_opendal = "0.55"
 
@@ -65,5 +62,9 @@ chrono = "0.4"
 # Encoding
 hex = "0.4"
 
-# Testing
-tempfile = "3"
+# UUID
+uuid = { version = "1", features = ["v4", "v7"] }
+
+# AWS SDK
+aws-config = "1"
+aws-sdk-glue = "1"

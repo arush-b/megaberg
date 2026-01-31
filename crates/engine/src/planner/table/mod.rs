@@ -31,20 +31,24 @@
 //! sink.commit(added_files, removed_files).await?;
 //! ```
 
-mod source;
-mod sink;
 mod iceberg;
 mod parquet;
+mod sink;
+mod source;
 
-pub use source::TableSource;
-pub use sink::{TableSink, CommitResult};
-pub use iceberg::{IcebergTable, CatalogConfig};
+pub use iceberg::{CatalogConfig, IcebergTable};
 pub use parquet::{
+    LookbackWindow,
     ParquetSource,
+    PartitionGranularity,
+    PartitionTimeField,
+    PartitionTimeSpec,
+    TimeComponent,
     // Time window config types for observability data
-    TimeWindowConfig, PartitionTimeSpec, PartitionTimeField,
-    TimeComponent, PartitionGranularity, LookbackWindow,
+    TimeWindowConfig,
 };
+pub use sink::{CommitResult, TableSink};
+pub use source::TableSource;
 
 // Re-export core types from discovery for convenience
-pub use super::discovery::{TableFormat, FileInfo, PartitionFileMap, FileGroup};
+pub use super::discovery::{FileGroup, FileInfo, PartitionFileMap, TableFormat};

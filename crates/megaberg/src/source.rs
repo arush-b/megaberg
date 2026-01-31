@@ -129,11 +129,11 @@ async fn create_sink(config: &AppConfig, operator: Operator) -> Result<Arc<dyn T
 mod tests {
     use super::*;
     use engine::executor::S3Config;
-    use engine::planner::{
-        LookbackWindow, PartitionGranularity, PartitionTimeField, PartitionTimeSpec,
-        TimeComponent, TimeWindowConfig,
-    };
     use engine::planner::discovery::TableFormat;
+    use engine::planner::{
+        LookbackWindow, PartitionGranularity, PartitionTimeField, PartitionTimeSpec, TimeComponent,
+        TimeWindowConfig,
+    };
 
     use crate::configs::{AppConfig, CompactionConfig, SourceConfig};
 
@@ -208,7 +208,10 @@ mod tests {
                 timezone: "UTC".to_string(),
                 granularity: PartitionGranularity::Hour,
             },
-            lookback: LookbackWindow::Duration { hours: 5, minutes: 0 },
+            lookback: LookbackWindow::Duration {
+                hours: 5,
+                minutes: 0,
+            },
             skip_recent: 1,
         };
 

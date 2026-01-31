@@ -36,7 +36,11 @@ pub fn pack_files(map: PartitionFileMap, config: &PackerConfig) -> Vec<FileGroup
 }
 
 /// Bin-pack files in a single partition into groups.
-fn bin_pack_partition(partition: &str, mut files: Vec<FileInfo>, target_size: u64) -> Vec<FileGroup> {
+fn bin_pack_partition(
+    partition: &str,
+    mut files: Vec<FileInfo>,
+    target_size: u64,
+) -> Vec<FileGroup> {
     // Sort by size descending (largest first for better packing)
     files.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
 
