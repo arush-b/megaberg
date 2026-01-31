@@ -33,7 +33,7 @@ jobs:
 
       - name: Install CI tools
         run: |
-          cargo install cargo-audit@0.21.2 --locked
+          cargo install cargo-audit --locked
           cargo install cargo-machete --locked
 
       - name: Build

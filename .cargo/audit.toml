@@ -1,0 +1,17 @@
+# cargo-audit configuration
+# https://docs.rs/cargo-audit/latest/cargo_audit/
+
+[advisories]
+# Ignore advisories for vulnerabilities in dev-dependencies only
+ignore = [
+    # tokio-tar 0.3.1: PAX header parsing vulnerability (RUSTSEC-2025-0111)
+    # - Only used by testcontainers (dev-dependency for integration tests)
+    # - No fix available upstream
+    # - Does not affect production binary
+    "RUSTSEC-2025-0111",
+]
+
+# Treat unmaintained/unsound warnings as non-blocking
+# These are in transitive dependencies from major crates (datafusion, AWS SDK)
+# that we cannot control. They are still reported but won't fail CI.
+informational_warnings = ["unmaintained", "unsound"]
